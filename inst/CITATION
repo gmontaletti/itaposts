@@ -1,0 +1,15 @@
+citHeader("Per citare il pacchetto 'itaposts' nelle pubblicazioni:")
+
+bibentry(
+  bibtype  = "Manual",
+  title    = "{itaposts}: Importazione e Normalizzazione di OJA Italiani in DuckDB",
+  author   = person(
+    given   = "Giampaolo",
+    family  = "Montaletti",
+    email   = "giampaolo.montaletti@gmail.com",
+    comment = c(ORCID = "0009-0002-5327-1122")
+  ),
+  year     = "2026",
+  note     = "Versione 0.1.0",
+  url      = "https://github.com/gmontaletti/itaposts"
+)

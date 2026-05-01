@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Bootstrap idempotente di itaposts su macchina pulita.
+# Eseguito una volta sulla macchina target dopo aver scompattato lo zip.
+
+set -euo pipefail
+
+BUNDLE_DIR="$(cd "$(dirname "$0")" && pwd)"
+TARBALL="$(ls -1 "$BUNDLE_DIR"/itaposts_*.tar.gz 2>/dev/null | head -n1 || true)"
+
+if [ -z "$TARBALL" ]; then
+  echo "ERRORE: nessun itaposts_*.tar.gz trovato in $BUNDLE_DIR." >&2
+  exit 1
+fi
+
+command -v R       >/dev/null || { echo "ERRORE: R non in PATH"       >&2; exit 1; }
+command -v Rscript >/dev/null || { echo "ERRORE: Rscript non in PATH" >&2; exit 1; }
+
+echo "==> R: $(R --version | head -n1)"
+
+echo "==> Installazione dipendenze CRAN mancanti"
+Rscript --vanilla - <<'RSCRIPT'
+deps <- c("cli", "curl", "data.table", "DBI", "dplyr", "dbplyr", "duckdb", "rlang")
+miss <- deps[!vapply(deps, requireNamespace, logical(1), quietly = TRUE)]
+if (length(miss)) {
+  message("Installo: ", paste(miss, collapse = ", "))
+  install.packages(miss, repos = "https://cloud.r-project.org")
+} else {
+  message("Tutte le dipendenze CRAN gia' presenti.")
+}
+RSCRIPT
+
+echo "==> Installazione itaposts da $(basename "$TARBALL")"
+R CMD INSTALL "$TARBALL"
+
+echo "==> Inizializzazione schema DuckDB"
+Rscript --vanilla -e 'itaposts::oja_init_db()'
+
+chmod +x "$BUNDLE_DIR/cron/run_sync.sh"
+
+if [ ! -f "$BUNDLE_DIR/cron/.Renviron" ]; then
+  cp "$BUNDLE_DIR/cron/.Renviron.template" "$BUNDLE_DIR/cron/.Renviron"
+  chmod 600 "$BUNDLE_DIR/cron/.Renviron"
+  echo "==> Creato $BUNDLE_DIR/cron/.Renviron — compilarlo prima del primo run."
+fi
+
+cat <<EOF
+
+Installazione completata.
+Prossimi passi:
+  1. Modificare $BUNDLE_DIR/cron/.Renviron con credenziali e percorsi reali.
+  2. Test manuale:
+       $BUNDLE_DIR/cron/run_sync.sh
+       tail -n 50 $BUNDLE_DIR/cron/logs/sync_*.log
+  3. Installazione cron (esempio):
+       crontab -l 2>/dev/null | { cat; cat $BUNDLE_DIR/cron/crontab.example; } | crontab -
+EOF

@@ -1,0 +1,10 @@
+# itaposts — sync OJA notturno alle 03:30 (ora locale)
+# Modificare il percorso se la cartella di destinazione e' diversa da
+# /opt/itaposts-cron/. Impostare MAILTO con un indirizzo per ricevere
+# stderr in caso di run fallita (cron invia mail solo se l'output
+# verso stderr e' non vuoto).
+
+SHELL=/bin/bash
+MAILTO=""
+
+30 3 * * * /opt/itaposts-cron/cron/run_sync.sh

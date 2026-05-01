@@ -1,0 +1,23 @@
+# Copiare in cron/.Renviron nella stessa cartella di run_sync.sh e compilare.
+# Permessi consigliati: chmod 600 cron/.Renviron
+
+# Credenziali SFTP -------------------------------------------------------------
+ITAPOSTS_SFTP_HOST=sftp.example.invalid
+ITAPOSTS_SFTP_PORT=22
+ITAPOSTS_SFTP_USER=__changeme__
+ITAPOSTS_SFTP_PASSWORD=__changeme__
+ITAPOSTS_SFTP_REMOTE_DIR=/exports/oja
+ITAPOSTS_SFTP_LOCAL_DIR=/var/itaposts/incoming
+
+# DuckDB -----------------------------------------------------------------------
+# Cartella radice del DuckDB condiviso. Il file vero risiede in
+# $SHARED_DATA_DIR/oja/itposts.duckdb. Default fallback del pacchetto:
+# ~/Documents/funzioni/shared_data — su macchine headless preferire un
+# percorso assoluto come quello qui sotto.
+SHARED_DATA_DIR=/var/itaposts/shared_data
+
+# Runtime ----------------------------------------------------------------------
+# Cartella per il lock file (default: tempdir()).
+ITAPOSTS_LOCK_DIR=/var/itaposts/run
+# Cartella per i log del wrapper (default: <script_dir>/logs).
+ITAPOSTS_LOG_DIR=/var/itaposts/logs

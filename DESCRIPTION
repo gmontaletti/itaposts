@@ -1,0 +1,41 @@
+Package: itaposts
+Type: Package
+Title: Importazione e Normalizzazione di OJA Italiani in DuckDB
+Version: 0.1.0
+Authors@R: person(
+    given = "Giampaolo",
+    family = "Montaletti",
+    email = "giampaolo.montaletti@gmail.com",
+    role = c("aut", "cre"),
+    comment = c(ORCID = "0009-0002-5327-1122"))
+Description: Importa, normalizza e indicizza in DuckDB i dati OJA
+    (Online Job Advertisements) Lightcast diffusi a livello regionale
+    italiano (NUTS-2, ad es. ITC4 Lombardia). Espone funzioni per
+    l'ingestione di snapshot mensili da archivi zip, una API di lettura
+    basata su 'dplyr' e uno shim di compatibilita' che restituisce la
+    forma tabellare attesa dal pacchetto 'skillviz'.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: false
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.1.0)
+Imports:
+    cli,
+    curl,
+    data.table,
+    DBI,
+    dplyr,
+    dbplyr,
+    duckdb,
+    rlang
+Suggests:
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    withr
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+URL: https://github.com/gmontaletti/itaposts
+BugReports: https://github.com/gmontaletti/itaposts/issues

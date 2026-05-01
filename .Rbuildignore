@@ -1,0 +1,17 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.DS_Store$
+^\.claude$
+^LICENSE\.md$
+^CLAUDE\.md$
+^read\.R$
+^ITC4_.*\.zip$
+^reference$
+^\.github$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$
+^doc$
+^Meta$
+^tools$
+^dist$

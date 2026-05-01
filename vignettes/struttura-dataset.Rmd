@@ -1,0 +1,374 @@
+---
+title: "Struttura del dataset OJA in DuckDB"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Struttura del dataset OJA in DuckDB}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE, comment = "#>")
+```
+
+# 1. Scopo e perimetro
+
+`itaposts` materializza i dati Lightcast OJA (Online Job Advertisements)
+italiani in un database DuckDB normalizzato. Il file fisico risiede in:
+
+```
+$SHARED_DATA_DIR/oja/itposts.duckdb
+```
+
+dove `SHARED_DATA_DIR` ha come fallback `~/Documents/funzioni/shared_data`. Il
+percorso e' restituito da `oja_db_path()`. Il database e' progettato per
+essere il punto unico di accesso ai dati OJA per i progetti dell'ecosistema
+(`skillviz`, `skillviz_workflow`, report ad hoc): l'ingestione paga il costo
+di parsing una volta sola, le query successive restano colonnari e veloci.
+
+Connessione:
+
+```{r}
+library(itaposts)
+con <- oja_connect()                             # read-only
+on.exit(oja_disconnect(con), add = TRUE)
+```
+
+# 2. Schema a stella
+
+Il modello e' uno **schema a stella**: due tabelle dei fatti al centro,
+undici dimensioni che ne descrivono gli attributi categoriali, una tabella
+di metadata che tiene traccia degli snapshot ingeriti.
+
+```
+                 dim_snapshot
+                      |
+                      |
+   dim_geography  ---+
+   dim_contract   ---+
+   dim_education  ---+
+   dim_sector     ---+
+   dim_experience ---+--- fact_postings ---+--- fact_skills --- dim_esco_skill
+   dim_working_h  ---+         |           |
+   dim_salary     ---+         |           |
+   dim_cp2021     ---+         |           |
+   dim_esco_occ   ---+         |
+   dim_source     ---+
+```
+
+Tutte le dimensioni si **accumulano fra snapshot** via UPSERT
+(`INSERT ... ON CONFLICT DO NOTHING`): ogni nuovo snapshot aggiunge le sole
+chiavi nuove, lasciando intatti i record esistenti. Le tabelle dei fatti
+sono **partizionate logicamente** per `snapshot_id`: la chiave primaria
+include sempre lo snapshot, e i `DELETE WHERE snapshot_id = ...` cancellano
+selettivamente uno snapshot per re-ingestirlo.
+
+# 3. Convenzioni di tipizzazione
+
+* **Identificatori in `VARCHAR`**. Tutte le colonne `id*` (incluso
+  `general_id`) sono tipizzate `VARCHAR`. Il dato Lightcast usa codici
+  alfanumerici per alcune classificazioni — ad es. `idmacro_sector = 'C'`
+  (codice ATECO macro), `idcategory_sector = 'D'`, `idcountry = 'IT'`. Lo
+  shim verso `skillviz` esegue il cast a `BIGINT` per `general_id`
+  preservando la compatibilita' a valle.
+* **Date in `DATE`**. Le triple `(year_, month_, day_)` originali sono
+  ricostruite in `grab_date` / `expire_date`. Lo shim le riespone come
+  triple per `skillviz`.
+* **Etichette in `VARCHAR`**. Tutte le label (occupazione, settore,
+  citta', ...) sono `VARCHAR` senza limiti di lunghezza.
+
+# 4. Tabelle dei fatti
+
+## 4.1 `fact_postings` — un annuncio per riga
+
+Una riga per ogni `(snapshot_id, general_id)` dopo la deduplicazione che
+mantiene la versione piu' recente per data di estrazione.
+
+| Colonna               | Tipo    | PK | Sorgente CSV                  | Note |
+|-----------------------|---------|----|-------------------------------|------|
+| `snapshot_id`         | VARCHAR | x  | derivata (es. `ITC4_2026_2`)  |      |
+| `general_id`          | VARCHAR | x  | `general_id`                  | identificatore Lightcast |
+| `region_code`         | VARCHAR |    | derivata (NUTS-2, es. `ITC4`) |      |
+| `grab_date`           | DATE    |    | `(year/month/day)_grab_date`  | data di estrazione dell'annuncio |
+| `expire_date`         | DATE    |    | `(year/month/day)_expire_date`| data di scadenza dell'annuncio |
+| `idcity`              | VARCHAR |    | `idcity`                      | FK -> `dim_geography` |
+| `idcontract`          | VARCHAR |    | `idcontract`                  | FK -> `dim_contract` |
+| `ideducational_level` | VARCHAR |    | `ideducational_level`         | FK -> `dim_education` |
+| `idsector`            | VARCHAR |    | `idsector`                    | FK -> `dim_sector` |
+| `idexperience`        | VARCHAR |    | `idexperience`                | FK -> `dim_experience` |
+| `idworking_hours`     | VARCHAR |    | `idworking_hours`             | FK -> `dim_working_hours` |
+| `idsalary`            | VARCHAR |    | `idsalary`                    | FK -> `dim_salary` |
+| `salaryvalue`         | DOUBLE  |    | `salaryvalue`                 | valore numerico, EUR/anno |
+| `idesco_level_5`      | VARCHAR |    | `idesco_level_5`              | FK -> `dim_esco_occupation` |
+| `cp2021_id_level_5`   | VARCHAR |    | `cp2021_id_level_5`           | FK -> `dim_cp2021` |
+| `source`              | VARCHAR |    | `source`                      | FK -> `dim_source` |
+| `companyname`         | VARCHAR |    | `companyname` (da `_postings_raw`) | inline, non normalizzato |
+
+`companyname` e' inlinata invece di vivere in una `dim_company` dedicata:
+il valore non e' usato come chiave di filtro a valle, e una surrogate key
+introdurrebbe complessita' di dedup senza beneficio in lettura.
+
+## 4.2 `fact_skills` — una skill per annuncio per riga
+
+| Colonna               | Tipo    | PK | Sorgente CSV          |
+|-----------------------|---------|----|-----------------------|
+| `snapshot_id`         | VARCHAR | x  | derivata              |
+| `general_id`          | VARCHAR | x  | `general_id`          |
+| `idescoskill_level_3` | VARCHAR | x  | `IDESCOSKILL_LEVEL_3` |
+
+Tabella **molto sottile**: i tre campi sono solo i puntatori. Tutte le
+proprieta' della skill (gerarchia ESCO, flag green/ICT/transversal,
+descrizioni, URI) sono **dipendenti dalla skill** e non dall'annuncio,
+quindi vivono in `dim_esco_skill` per evitare di replicarle ~880mila volte
+per snapshot.
+
+# 5. Dimensioni
+
+## 5.1 `dim_geography`
+
+PK `idcity`. Riga unica per citta' Lightcast con tutta la catena
+gerarchica fino al paese.
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `idcity` (PK) | VARCHAR | codice ISTAT del comune con zero davanti |
+| `city` | VARCHAR | denominazione comune |
+| `idprovince` | VARCHAR | codice NUTS-3 (es. `ITC48`) |
+| `province` | VARCHAR | provincia (es. Pavia) |
+| `idregion` | VARCHAR | codice NUTS-2 (es. `ITC4`) |
+| `region` | VARCHAR | regione (es. Lombardia) |
+| `idmacro_region` | VARCHAR | codice NUTS-1 (es. `ITC`) |
+| `macro_region` | VARCHAR | macro-area (es. Nord-Ovest) |
+| `idcountry` | VARCHAR | codice ISO (`IT`) |
+| `country` | VARCHAR | paese |
+
+## 5.2 `dim_sector`
+
+PK `idsector`. Settore ATECO con i due livelli di aggregazione.
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `idsector` (PK) | VARCHAR | codice ATECO 2 cifre |
+| `sector` | VARCHAR | label |
+| `idmacro_sector` | VARCHAR | lettera macro-settore (A-U) |
+| `macro_sector` | VARCHAR | label |
+| `idcategory_sector` | VARCHAR | codice categoria |
+| `category_sector` | VARCHAR | label |
+
+## 5.3 `dim_cp2021`
+
+PK `cp2021_id_level_5`. Classificazione delle Professioni ISTAT 2021,
+gerarchia a 5 livelli.
+
+| Colonna | Tipo |
+|---|---|
+| `cp2021_id_level_5` (PK) | VARCHAR |
+| `cp2021_level_5` | VARCHAR |
+| `cp2021_id_level_4` | VARCHAR |
+| `cp2021_level_4` | VARCHAR |
+| `cp2021_id_level_3` | VARCHAR |
+| `cp2021_level_3` | VARCHAR |
+| `cp2021_id_level_2` | VARCHAR |
+| `cp2021_level_2` | VARCHAR |
+| `cp2021_id_level_1` | VARCHAR |
+| `cp2021_level_1` | VARCHAR |
+
+## 5.4 `dim_esco_occupation`
+
+PK `idesco_level_5`. ESCO occupation, livelli 4 e 5 con URI.
+
+| Colonna | Tipo |
+|---|---|
+| `idesco_level_5` (PK) | VARCHAR |
+| `esco_level_5` | VARCHAR |
+| `idesco_level_4` | VARCHAR |
+| `esco_level_4` | VARCHAR |
+| `uri` | VARCHAR |
+
+## 5.5 `dim_esco_skill`
+
+PK `idescoskill_level_3`. La dimensione piu' larga: 30 colonne con tutte
+le proprieta' della skill.
+
+| Colonna | Tipo | Categoria |
+|---|---|---|
+| `idescoskill_level_3` (PK) | VARCHAR | identificativo |
+| `escoskill_level_3` | VARCHAR | label IT |
+| `esco_v0101_obsolete` | VARCHAR | flag |
+| `esco_v0101_description` | VARCHAR | descrizione |
+| `onet_hier_level_1/2/3` | VARCHAR | gerarchia ONET |
+| `pillar_softskills` | VARCHAR | flag |
+| `pillar_digitalskills` | VARCHAR | flag |
+| `pillar_bigdata` | VARCHAR | flag |
+| `esco_v0101_uri` | VARCHAR | URI ESCO |
+| `esco_v0101_skillstype` | VARCHAR | classe ESCO |
+| `esco_v0101_reusetype` | VARCHAR | riusabilita' (cross-sector / transversal / ...) |
+| `esco_v0101_digcomp` | VARCHAR | flag DigComp |
+| `esco_v0101_green` | VARCHAR | flag green |
+| `esco_v0101_ict` | VARCHAR | flag ICT |
+| `esco_v0101_language` | VARCHAR | flag language |
+| `esco_v0101_transversal` | VARCHAR | flag |
+| `esco_v0101_hier_code_0..3` | VARCHAR | codice gerarchia ESCO |
+| `esco_v0101_hier_uri_0..3` | VARCHAR | URI gerarchia ESCO |
+| `esco_v0101_hier_label_0..3` | VARCHAR | label gerarchia ESCO |
+
+## 5.6 Dimensioni "piatte"
+
+| Dimensione | PK | Cardinalita' tipica | Contenuto |
+|---|---|---:|---|
+| `dim_contract` | `idcontract` | 4 | tempo determinato, indeterminato, ... |
+| `dim_education` | `ideducational_level` | 8 | titolo di studio richiesto |
+| `dim_experience` | `idexperience` | 8 | fasce di esperienza |
+| `dim_working_hours` | `idworking_hours` | 2 | full-time / part-time |
+| `dim_salary` | `idsalary` | 13 | fascia retributiva |
+| `dim_source` | `source` | ~750 | sorgente del job board |
+
+`dim_source` ha cardinalita' alta perche' Lightcast normalizza centinaia
+di portali distinti (`IT_RANDSTAD`, `IT_INDEED`, `IT_LINKEDIN`, ...).
+
+# 6. Tabella di metadata
+
+## 6.1 `dim_snapshot`
+
+PK `snapshot_id` (es. `"ITC4_2026_2"`). Una riga per ogni snapshot
+ingerito; popolata in coda alla transazione di ingestione.
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `snapshot_id` (PK) | VARCHAR | `<REGION>_<YEAR>_<MONTH>` |
+| `region_code` | VARCHAR | NUTS-2 |
+| `year` | INTEGER | anno snapshot |
+| `month` | INTEGER | mese snapshot |
+| `ingested_at` | TIMESTAMP | momento dell'ingestione |
+| `n_postings` | BIGINT | righe in `fact_postings` per lo snapshot |
+| `n_skills` | BIGINT | righe in `fact_skills` per lo snapshot |
+| `source_zip_postings` | VARCHAR | nome file sorgente |
+| `source_zip_skills` | VARCHAR | nome file sorgente |
+| `itaposts_version` | VARCHAR | versione del pacchetto al momento dell'ingestione |
+
+# 7. Esempi di query
+
+Tutte le query seguenti assumono `con` ottenuto da `oja_connect()`.
+
+## 7.1 Conteggio annunci per occupazione ESCO livello 4
+
+```{r}
+DBI::dbGetQuery(con, "
+  SELECT eo.idesco_level_4, eo.esco_level_4, COUNT(*) AS n
+    FROM fact_postings p
+    LEFT JOIN dim_esco_occupation eo ON eo.idesco_level_5 = p.idesco_level_5
+   WHERE p.snapshot_id = 'ITC4_2026_2'
+   GROUP BY eo.idesco_level_4, eo.esco_level_4
+   ORDER BY n DESC
+   LIMIT 10
+")
+```
+
+## 7.2 Skill richieste piu' frequentemente per una professione
+
+```{r}
+DBI::dbGetQuery(con, "
+  SELECT d.idescoskill_level_3, d.escoskill_level_3, COUNT(*) AS n
+    FROM fact_skills s
+    JOIN fact_postings p
+      ON p.snapshot_id = s.snapshot_id AND p.general_id = s.general_id
+    JOIN dim_esco_skill d
+      ON d.idescoskill_level_3 = s.idescoskill_level_3
+   WHERE p.idesco_level_4 IS NULL  -- esempio: cambiare con valore reale
+     AND p.snapshot_id = 'ITC4_2026_2'
+   GROUP BY d.idescoskill_level_3, d.escoskill_level_3
+   ORDER BY n DESC
+   LIMIT 20
+")
+```
+
+## 7.3 Quota di green skill per macro-settore
+
+```{r}
+DBI::dbGetQuery(con, "
+  SELECT s.idmacro_sector, s.macro_sector,
+         AVG(CASE WHEN d.esco_v0101_green = 'Y' THEN 1.0 ELSE 0 END)
+           AS green_share,
+         COUNT(*) AS n_skill_rows
+    FROM fact_skills fs
+    JOIN fact_postings p
+      ON p.snapshot_id = fs.snapshot_id AND p.general_id = fs.general_id
+    LEFT JOIN dim_sector s        ON s.idsector = p.idsector
+    LEFT JOIN dim_esco_skill d    ON d.idescoskill_level_3 = fs.idescoskill_level_3
+   WHERE fs.snapshot_id = 'ITC4_2026_2'
+   GROUP BY s.idmacro_sector, s.macro_sector
+   ORDER BY green_share DESC
+")
+```
+
+## 7.4 Equivalente in `dplyr` lazy
+
+```{r}
+library(dplyr)
+
+oja_postings(con, snapshots = "ITC4_2026_2") |>
+  left_join(dplyr::tbl(con, "dim_esco_occupation"), by = "idesco_level_5") |>
+  count(idesco_level_4, esco_level_4, sort = TRUE) |>
+  head(10) |>
+  collect()
+```
+
+# 8. Compatibilita' con `skillviz`
+
+`oja_normalised(con, snapshots = ...)` ricostruisce la lista a tre
+elementi `(postings, skills, companies)` prodotta da
+`skillviz::normalize_ojv()`. La parita' e' bit-exact su `general_id`. Le
+colonne in `skills` riportano i nomi originali in maiuscolo
+(`IDESCOSKILL_LEVEL_3`, `ESCO_V0101_GREEN`, ...) per evitare un cambio
+contrattuale ai consumatori a valle.
+
+```{r}
+ojv <- oja_normalised(con, snapshots = "ITC4_2026_2")
+# stesso shape di skillviz::normalize_ojv():
+# ojv$postings, ojv$skills, ojv$companies (data.table, key = general_id)
+```
+
+# 9. Sincronizzazione da SFTP
+
+`oja_sync()` scarica gli archivi mensili Lightcast da un server SFTP e
+chiama in coda `oja_ingest_dirs()`. Le credenziali vivono in `.Renviron`,
+non vengono mai esposte sulla riga di comando.
+
+```
+ITAPOSTS_SFTP_HOST=sftp.lightcast.example
+ITAPOSTS_SFTP_PORT=22
+ITAPOSTS_SFTP_USER=...
+ITAPOSTS_SFTP_PASSWORD=...
+ITAPOSTS_SFTP_REMOTE_DIR=/exports/oja
+ITAPOSTS_SFTP_LOCAL_DIR=~/Documents/funzioni/itaposts/incoming
+```
+
+`PORT` (default 22) e `LOCAL_DIR` (default `tempdir()/itaposts_incoming`)
+sono opzionali; le altre quattro variabili sono obbligatorie.
+
+Flusso completo dalla prima volta:
+
+```{r}
+readRenviron("~/.Renviron")
+itaposts::oja_sync(region_code = "ITC4")
+```
+
+`oja_sync()` e' idempotente: file locali con stessa dimensione del remoto
+vengono saltati, snapshot gia' presenti in `dim_snapshot` non vengono
+reingeriti (a meno di `overwrite = TRUE`). Per scaricare senza ingerire,
+passare `ingest = FALSE`.
+
+# 10. Performance e dimensioni
+
+Per uno snapshot mensile ITC4 tipico (89mila annunci, 880mila righe di
+skill):
+
+* DuckDB su disco: ~67 MB (vs 117 MB di archivi zip sorgenti)
+* Ingestione completa: ~10 secondi
+* `oja_normalised()`: ~1.1 secondi
+* Aggregazioni colonnari (count per occupazione, skill x settore): da 10
+  a 50 ms
+
+L'aggiunta di un nuovo snapshot e' incrementale: i fatti accolgono solo le
+righe del nuovo `snapshot_id`, le dimensioni si limitano a integrare i
+nuovi codici via UPSERT.
