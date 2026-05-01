@@ -1,3 +1,9 @@
+# itaposts (in sviluppo)
+
+Modifiche destinate alla prossima versione minore (0.2.0). Aggiungere qui
+le nuove funzionalità, le correzioni e le rotture di API mano a mano che
+vengono implementate.
+
 # itaposts 0.1.0
 
 Versione iniziale.
