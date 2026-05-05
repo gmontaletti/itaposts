@@ -8,7 +8,7 @@ vignette: >
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(eval = FALSE, comment = "#>")
+knitr::opts_chunk$set(eval = FALSE, comment = "#>", purl = FALSE)
 ```
 
 # 1. Scopo e perimetro

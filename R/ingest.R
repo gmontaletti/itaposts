@@ -602,9 +602,24 @@ oja_ingest_dirs <- function(
   if (!is.null(snapshots)) {
     ids <- intersect(ids, snapshots)
   }
+  # Frame canonico di ritorno: usato sia dall'early-return sia come fallback
+  # per ogni riga in errore. La tipizzazione esplicita e' necessaria perche'
+  # do.call(rbind, ...) non inferisce i tipi quando tutte le righe sono NA,
+  # e summary$snapshot_id risulterebbe NULL causando "invalid argument type"
+  # nella match() di oja_sync().
+  .empty_summary <- function() {
+    data.frame(
+      snapshot_id = character(),
+      n_postings = integer(),
+      n_skills = integer(),
+      ingested_at = as.POSIXct(character()),
+      stringsAsFactors = FALSE
+    )
+  }
+
   if (!length(ids)) {
     cli::cli_warn("Nessuno snapshot da processare in {.path {zip_dir}}.")
-    return(invisible(data.frame()))
+    return(invisible(.empty_summary()))
   }
 
   con <- oja_connect(path = path, read_only = FALSE)
@@ -621,10 +636,21 @@ oja_ingest_dirs <- function(
       ),
       error = function(e) {
         cli::cli_alert_danger("Snapshot {.val {id}}: {conditionMessage(e)}")
-        list(snapshot_id = id, n_postings = NA, n_skills = NA, ingested_at = NA)
+        list(
+          snapshot_id = id,
+          n_postings = NA_integer_,
+          n_skills = NA_integer_,
+          ingested_at = NA_character_
+        )
       }
     )
-    as.data.frame(res, stringsAsFactors = FALSE)
+    data.frame(
+      snapshot_id = as.character(res$snapshot_id),
+      n_postings = as.integer(res$n_postings),
+      n_skills = as.integer(res$n_skills),
+      ingested_at = as.POSIXct(res$ingested_at),
+      stringsAsFactors = FALSE
+    )
   })
-  invisible(do.call(rbind, rows))
+  invisible(do.call(rbind, c(rows, list(.empty_summary()))))
 }

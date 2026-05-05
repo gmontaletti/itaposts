@@ -1,0 +1,10 @@
+# /etc/cron.d/itaposts
+# Permessi: 0644, owner root:root.
+# L'utente del job ("monty" qui) deve appartenere al gruppo docker e possedere
+# /var/itaposts/ (creato dall'install descritto in docker/README.md).
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Sync giornaliera alle 04:17 ora locale del server.
+17 4 * * * monty /usr/local/bin/itaposts-sync.sh >> /var/log/itaposts/sync.log 2>&1

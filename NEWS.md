@@ -1,97 +1,20 @@
-# itaposts (in sviluppo)
+# itaposts 0.2.0
 
-Modifiche destinate alla prossima versione minore (0.2.0). Aggiungere qui
-le nuove funzionalità, le correzioni e le rotture di API mano a mano che
-vengono implementate.
+## Backend SFTP
 
-## Backend SFTP riscritto su OpenSSH
+Completata la migrazione del backend SFTP a OpenSSH `sftp` invocato via `processx`, iniziata in `816daab`. Rimossa ogni traccia del backend libcurl/libssh. La configurazione vive in env vars `ITAPOSTS_SFTP_{HOST,PORT,USER,PASSWORD,REMOTE_DIR,LOCAL_DIR}`. L'auth a chiave SSH non è supportata contro `custom-delivery.lightcast.io` perché Lightcast non registra chiavi pubbliche lato server: l'unica modalità praticabile è l'auth a password con `sshpass` come helper.
 
-* Il client SFTP non si appoggia più a `libcurl`: la versione di
-  `libcurl` distribuita con i binari CRAN di `curl` su macOS (e su molte
-  distribuzioni Linux) è compilata senza il backend `libssh`/`libssh2`,
-  quindi non parla SFTP. Il sintomo era `Invalid or unsupported value`
-  su `ssh_auth_types` e, a valle, `oja_sync()` non funzionante. Il
-  pacchetto ora invoca il client OpenSSH `sftp` via `processx::run()`
-  (in realtà via `processx::process$new()` per poter scrivere la
-  password su `stdin` quando serve). `sftp` è installato di default su
-  macOS e su pressoché tutte le distribuzioni Linux, senza dipendenze
-  native aggiuntive.
-* `curl` rimosso dagli `Imports`. Aggiunto `processx`.
-* `ITAPOSTS_SFTP_HOST_FINGERPRINT_MD5` e
-  `ITAPOSTS_SFTP_HOST_FINGERPRINT_SHA256` sono ora informativi: il
-  backend OpenSSH non li legge. Per pinnare la chiave host SSH usare
-  `ITAPOSTS_SFTP_KNOWN_HOSTS` (path a un file `known_hosts`), che viene
-  passato a `sftp` come `-o UserKnownHostsFile=...` con
-  `StrictHostKeyChecking=yes`. La presenza di una delle due variabili
-  fingerprint produce un avviso una volta per sessione. I tre campi
-  (insieme a `auth_types`) restano comunque nella lista restituita da
-  `oja_sftp_config()` per non rompere `.Renviron` esistenti.
-* La maschera `ITAPOSTS_SFTP_AUTH_TYPES` viene tradotta in
-  `PreferredAuthentications` (1=`password`, 2=`publickey`,
-  4=`hostbased`, 8=`keyboard-interactive`). Quando coincide col default
-  9 (password+keyboard-interactive) non viene passata, lasciando agli
-  algoritmi di default di OpenSSH la scelta.
-* Auth a chiave (raccomandata in cron): impostare
-  `ITAPOSTS_SFTP_PRIVATE_KEY` al path della chiave privata. Il client
-  viene allora invocato con `BatchMode=yes` (errore immediato in caso
-  di prompt password). Eventuali passphrase devono essere già caricate
-  in `ssh-agent`: questo backend non le digita per non scriverle mai
-  sull'argv.
-* Auth a password: serve `expect` (preinstallato su macOS; su
-  Debian/Ubuntu `apt install expect`) oppure `sshpass`. La password
-  viene passata su `stdin` dell'helper expect o tramite la variabile
-  `SSHPASS` (`sshpass -e`); mai sull'argv (per non comparire in `ps`).
-  Senza alcuno dei due helper il pacchetto si interrompe con messaggio
-  esplicito.
+## Deployment containerizzato
 
-## Nuove funzionalita'
+Nuovo `Dockerfile` su `rocker/r2u:noble` che impacchetta il pacchetto, le 8 dipendenze CRAN dirette (binari apt via bspm, niente compilazione) e il client OpenSSH `sftp` + `sshpass`. Lo script host `docker/itaposts-sync.sh` invoca `docker run --rm` con `--name itaposts-sync` per la collision-lock e `--user $(id -u):$(id -g)` per le perms sui bind mount (`/var/itaposts/{shared,incoming,run}`). I segreti arrivano via `--env-file`, mai sull'argv. CI GitHub Actions (`.github/workflows/docker.yml`) builda e pubblica su `ghcr.io/gmontaletti/itaposts:VERSION` ai tag `v*`. Documentazione operativa in `docker/README.md`. **BREAKING per ops** (la procedura di install cambia integralmente); la API R non cambia.
 
-* `oja_sftp_config()` ora trimma whitespace e virgolette esterne da
-  `ITAPOSTS_SFTP_USER` e `ITAPOSTS_SFTP_PASSWORD` (es. `PASSWORD="abc"`
-  produceva un'autenticazione fallita perche' `readRenviron()` lascia le
-  virgolette nella stringa).
-* Il default di `ssh_auth_types` per il client SFTP passa da `1L`
-  (password puro) a `1L | 8L = 9L` (password + keyboard-interactive).
-  Molti server OpenSSH disabilitano `password` e annunciano solo
-  `keyboard-interactive`: il vecchio default produceva `Login denied`
-  anche con credenziali corrette. La maschera puo' essere forzata via
-  `ITAPOSTS_SFTP_AUTH_TYPES` (1=password, 2=publickey, 4=hostbased,
-  8=keyboard-interactive; sommabili).
-* Aggiunto supporto a public-key authentication via
-  `ITAPOSTS_SFTP_PRIVATE_KEY`, `ITAPOSTS_SFTP_PUBLIC_KEY`,
-  `ITAPOSTS_SFTP_PRIVATE_KEY_PASSPHRASE`. Quando una chiave privata e'
-  configurata, il bit `publickey` viene aggiunto in automatico alla
-  maschera di default.
-* `oja_sftp_config()` legge tre nuove variabili `.Renviron` per il pinning
-  della chiave host SSH:
-    * `ITAPOSTS_SFTP_KNOWN_HOSTS` — path a un file `known_hosts` dedicato.
-    * `ITAPOSTS_SFTP_HOST_FINGERPRINT_MD5` — fingerprint MD5 (32 hex,
-      con o senza `:`).
-    * `ITAPOSTS_SFTP_HOST_FINGERPRINT_SHA256` — fingerprint SHA-256
-      base64 (eventuale prefisso `SHA256:` viene scartato; richiede
-      libcurl >= 7.80).
-  Le tre variabili vengono propagate sul `curl::handle` SFTP, evitando
-  il fallback a `~/.ssh/known_hosts` dell'utente che esegue il processo
-  e quindi l'errore "SSL peer certificate or SSH remote key was not OK"
-  visto sui run cron senza HOME popolato. Le opzioni sono opzionali e
-  retro-compatibili: senza alcuna delle tre il comportamento e' invariato.
+## Bug fix oja_sync()
 
-## Correzioni
+Risolto il fallimento `oja_sync() fallita: invalid argument type` che si manifestava quando tutti gli snapshot remoti erano già presenti in `dim_snapshot`. Causa: `oja_ingest_dirs()` poteva ritornare un `data.frame` con colonne implicite o assenti, su cui `match()` lanciava `invalid argument type`. Fix in `R/ingest.R` (tutti i return path passano da `.empty_summary()` con colonne tipate) e in `R/sftp.R` (guardia `"snapshot_id" %in% names(summary)`). Test di regressione in `tests/testthat/test-sync-empty.R`.
 
-* Bundle cron: `inst/cron/run_sync.sh` ora invoca `Rscript` con
-  `--no-save --no-restore --no-init-file --no-site-file` invece di
-  `--vanilla`. `--vanilla` implicava `--no-environ`, quindi `.Renviron` non
-  veniva letto all'avvio di R e `R_LIBS_USER` non entrava in `.libPaths()`:
-  il cron falliva con exit code 2 ("Pacchetto 'itaposts' non installato")
-  anche quando il pacchetto era regolarmente installato nella libreria
-  utente. Aggiunto inoltre in `sync_oja.R` un fallback difensivo che
-  estende `.libPaths()` con `R_LIBS_USER` dopo `readRenviron()`, e un log
-  diagnostico più verboso quando `requireNamespace("itaposts")` fallisce.
-* `tools/install.sh.template` allineato a `dist/.../install.sh` (era
-  rimasto indietro): risolve `R_LIBS_USER`, lo esporta, installa
-  dipendenze e pacchetto in quella libreria, e ora pinna anche
-  `R_LIBS_USER=…` in `cron/.Renviron` se la riga non esiste, così il run
-  successivo del cron vede subito il pacchetto.
+## File rimossi
+
+`tools/build_transfer_zip.sh`, `tools/install.sh.template`, `tools/vendor-cache/`, `INSTALLAZIONE.md`, `inst/cron/run_sync.sh`, `inst/cron/.Renviron.template`, `inst/cron/crontab.example`, `inst/cron/README.md`. Sostituiti dal Dockerfile + `docker/`.
 
 # itaposts 0.1.0
 

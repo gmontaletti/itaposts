@@ -732,7 +732,11 @@ oja_sync <- function(
       overwrite = overwrite,
       path = path
     )
-    if (nrow(summary)) {
+    # Fix 2: guardia esplicita su "snapshot_id" %in% names(summary) come
+    # belt-and-suspenders contro future regressioni nella forma di ritorno di
+    # oja_ingest_dirs(). Fix 1 garantisce gia' che snapshot_id sia sempre
+    # presente, ma il check rende il codice robusto a modifiche future.
+    if (nrow(summary) > 0 && "snapshot_id" %in% names(summary)) {
       m <- match(
         unname(vapply(rows, `[[`, character(1), "snapshot_id")),
         summary$snapshot_id
@@ -740,8 +744,12 @@ oja_sync <- function(
       for (i in seq_along(rows)) {
         if (!is.na(m[i])) {
           rows[[i]]$ingested <- TRUE
-          rows[[i]]$n_postings <- summary$n_postings[m[i]]
-          rows[[i]]$n_skills <- summary$n_skills[m[i]]
+          if ("n_postings" %in% names(summary)) {
+            rows[[i]]$n_postings <- summary$n_postings[m[i]]
+          }
+          if ("n_skills" %in% names(summary)) {
+            rows[[i]]$n_skills <- summary$n_skills[m[i]]
+          }
         }
       }
     }

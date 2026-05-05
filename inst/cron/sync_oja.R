@@ -1,8 +1,10 @@
 #!/usr/bin/env Rscript
 
 # 1. Ambiente -----------------------------------------------------------------
-# Entry point unattended invocato da run_sync.sh. La cwd e' la cartella che
-# contiene questo file (impostata dal wrapper) e l'eventuale .Renviron locale.
+# Entry point unattended del container itaposts. Le credenziali SFTP arrivano
+# come env vars iniettate dal docker run --env-file; il pacchetto e' installato
+# in /usr/local/lib/R/site-library; i path runtime sono fissati nel Dockerfile
+# e bind-montati dal host.
 
 options(warn = 1, itaposts.cron = TRUE)
 
@@ -27,39 +29,14 @@ options(warn = 1, itaposts.cron = TRUE)
   R.version$platform
 )
 
-# 3. Caricamento .Renviron ----------------------------------------------------
-# Rscript --vanilla salta .Renviron: lo carichiamo a mano. Ordine HOME -> cwd
-# in modo che la copia locale (cron/.Renviron) abbia la precedenza.
-
-for (f in c(path.expand("~/.Renviron"), file.path(getwd(), ".Renviron"))) {
-  if (file.exists(f)) {
-    .log("INFO", "Carico ", f)
-    readRenviron(f)
-  }
-}
-
-# Se .Renviron e' stato letto qui (e non all'avvio di R), R_LIBS_USER e'
-# arrivato come variabile d'ambiente ma .libPaths() era gia' stato calcolato
-# senza di lui: ripristiniamolo a mano. Idempotente se gia' presente.
-.user_lib <- Sys.getenv("R_LIBS_USER", unset = "")
-if (nzchar(.user_lib)) {
-  .user_lib <- path.expand(.user_lib)
-  if (dir.exists(.user_lib) && !.user_lib %in% .libPaths()) {
-    .libPaths(c(.user_lib, .libPaths()))
-    .log("INFO", "Aggiunto R_LIBS_USER a .libPaths(): ", .user_lib)
-  }
-}
-
-# 4. Pacchetto ----------------------------------------------------------------
+# 3. Pacchetto ----------------------------------------------------------------
 
 if (!requireNamespace("itaposts", quietly = TRUE)) {
   .log(
     "ERROR",
     "Pacchetto 'itaposts' non trovato. .libPaths() = ",
     paste(.libPaths(), collapse = ", "),
-    "; R_LIBS_USER = '",
-    Sys.getenv("R_LIBS_USER"),
-    "'. Verificare che install.sh sia stato eseguito con lo stesso utente."
+    ". Immagine container corrotta?"
   )
   quit(status = 2, save = "no")
 }
@@ -69,7 +46,7 @@ if (!requireNamespace("itaposts", quietly = TRUE)) {
   as.character(utils::packageVersion("itaposts"))
 )
 
-# 5. Lock file ----------------------------------------------------------------
+# 4. Lock file ----------------------------------------------------------------
 # DuckDB rifiuta una seconda connessione in scrittura sullo stesso file.
 # Evitiamo che cron lanci una seconda istanza prima che la precedente chiuda.
 
@@ -77,7 +54,23 @@ lock_dir <- Sys.getenv(
   "ITAPOSTS_LOCK_DIR",
   unset = file.path(tempdir(), "itaposts_lock")
 )
-dir.create(lock_dir, recursive = TRUE, showWarnings = FALSE)
+if (!dir.exists(lock_dir)) {
+  ok <- tryCatch(
+    dir.create(lock_dir, recursive = TRUE),
+    warning = function(w) FALSE,
+    error = function(e) FALSE
+  )
+  if (!isTRUE(ok) || !dir.exists(lock_dir)) {
+    .log(
+      "ERROR",
+      "Impossibile creare ITAPOSTS_LOCK_DIR=",
+      lock_dir,
+      ". Verificare che il bind mount /var/itaposts/run sia scrivibile",
+      " dall'UID del processo (--user $(id -u):$(id -g))."
+    )
+    quit(status = 1, save = "no")
+  }
+}
 lock_file <- file.path(lock_dir, "sync_oja.lock")
 
 if (file.exists(lock_file)) {
@@ -105,7 +98,7 @@ if (file.exists(lock_file)) {
 writeLines(as.character(Sys.getpid()), lock_file)
 on.exit(try(file.remove(lock_file), silent = TRUE), add = TRUE)
 
-# 6. Sync ---------------------------------------------------------------------
+# 5. Sync ---------------------------------------------------------------------
 
 t0 <- Sys.time()
 status <- tryCatch(

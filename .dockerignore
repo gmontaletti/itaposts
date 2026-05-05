@@ -1,0 +1,33 @@
+.git
+.github
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.DS_Store
+.claude
+.Renviron
+itaposts.Rproj
+
+# Bare-metal install artefatti (in fase di rimozione)
+dist
+tools/vendor-cache
+INSTALLAZIONE.md
+
+# Test data e file di transferimento
+ITC4_*.zip
+*.zip
+monty@mini
+
+# Build R locale
+docs
+doc
+Meta
+inst/doc
+src-x64
+
+# Documenti e supporto sviluppo
+reference
+*.log
+output
+incoming
