@@ -17,23 +17,54 @@ command -v Rscript >/dev/null || { echo "ERRORE: Rscript non in PATH" >&2; exit 
 
 echo "==> R: $(R --version | head -n1)"
 
+# Garantisce una libreria utente scrivibile (evita /usr/local/lib/R/site-library).
+# Lo stesso path deve poi essere visibile al wrapper cron via .Renviron, altrimenti
+# Rscript dal cron non trovera' itaposts.
+R_LIBS_USER="$(Rscript --vanilla -e 'cat(Sys.getenv("R_LIBS_USER"))')"
+if [ -z "$R_LIBS_USER" ]; then
+  echo "ERRORE: R_LIBS_USER non risolto da R." >&2
+  exit 1
+fi
+mkdir -p "$R_LIBS_USER"
+export R_LIBS_USER
+echo "==> Libreria utente: $R_LIBS_USER"
+
 echo "==> Installazione dipendenze CRAN mancanti"
 Rscript --vanilla - <<'RSCRIPT'
-deps <- c("cli", "curl", "data.table", "DBI", "dplyr", "dbplyr", "duckdb", "rlang")
+user_lib <- Sys.getenv("R_LIBS_USER")
+dir.create(user_lib, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(user_lib, .libPaths()))
+deps <- c("cli", "data.table", "DBI", "dplyr", "dbplyr", "duckdb", "processx", "rlang")
 miss <- deps[!vapply(deps, requireNamespace, logical(1), quietly = TRUE)]
 if (length(miss)) {
-  message("Installo: ", paste(miss, collapse = ", "))
-  install.packages(miss, repos = "https://cloud.r-project.org")
+  message("Installo in ", user_lib, ": ", paste(miss, collapse = ", "))
+  install.packages(miss, lib = user_lib, repos = "https://cloud.r-project.org")
 } else {
   message("Tutte le dipendenze CRAN gia' presenti.")
 }
 RSCRIPT
 
 echo "==> Installazione itaposts da $(basename "$TARBALL")"
-R CMD INSTALL "$TARBALL"
+R CMD INSTALL --library="$R_LIBS_USER" "$TARBALL"
 
 echo "==> Inizializzazione schema DuckDB"
 Rscript --vanilla -e 'itaposts::oja_init_db()'
+
+# Preflight runtime SFTP: il client OpenSSH `sftp` deve essere in PATH.
+# Per auth a password serve `expect` o `sshpass`. Per auth a chiave (modalita'
+# raccomandata) basta `sftp`.
+echo "==> Preflight binari SFTP"
+if ! command -v sftp >/dev/null 2>&1; then
+  echo "AVVISO: 'sftp' non trovato in PATH. Installare il client OpenSSH" >&2
+  echo "        (di solito gia' presente su macOS e su tutte le distribuzioni Linux)." >&2
+fi
+if ! command -v expect  >/dev/null 2>&1 && \
+   ! command -v sshpass >/dev/null 2>&1; then
+  echo "INFO: ne' 'expect' ne' 'sshpass' presenti. L'auth SFTP a password non sara'"
+  echo "      utilizzabile finche' non ne installi almeno uno (su macOS 'expect' e' di"
+  echo "      solito gia' presente; su Debian/Ubuntu: 'apt install expect')."
+  echo "      L'auth a chiave SSH (raccomandata su cron) non richiede helper esterni."
+fi
 
 chmod +x "$BUNDLE_DIR/cron/run_sync.sh"
 
@@ -41,6 +72,16 @@ if [ ! -f "$BUNDLE_DIR/cron/.Renviron" ]; then
   cp "$BUNDLE_DIR/cron/.Renviron.template" "$BUNDLE_DIR/cron/.Renviron"
   chmod 600 "$BUNDLE_DIR/cron/.Renviron"
   echo "==> Creato $BUNDLE_DIR/cron/.Renviron — compilarlo prima del primo run."
+fi
+
+# Pin di R_LIBS_USER nel .Renviron del cron, se mancante. Il wrapper cd-a in
+# cron/ prima di lanciare Rscript senza --vanilla, quindi questo .Renviron
+# viene letto all'avvio di R e R_LIBS_USER finisce in .libPaths() prima del
+# requireNamespace('itaposts').
+ENV_FILE="$BUNDLE_DIR/cron/.Renviron"
+if [ -f "$ENV_FILE" ] && ! grep -qE '^R_LIBS_USER=' "$ENV_FILE"; then
+  printf '\n# Auto-aggiunto da install.sh: libreria R utente con itaposts.\nR_LIBS_USER=%s\n' "$R_LIBS_USER" >> "$ENV_FILE"
+  echo "==> Pinned R_LIBS_USER=$R_LIBS_USER in $ENV_FILE"
 fi
 
 cat <<EOF

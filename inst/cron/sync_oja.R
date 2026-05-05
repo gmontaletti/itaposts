@@ -38,12 +38,28 @@ for (f in c(path.expand("~/.Renviron"), file.path(getwd(), ".Renviron"))) {
   }
 }
 
+# Se .Renviron e' stato letto qui (e non all'avvio di R), R_LIBS_USER e'
+# arrivato come variabile d'ambiente ma .libPaths() era gia' stato calcolato
+# senza di lui: ripristiniamolo a mano. Idempotente se gia' presente.
+.user_lib <- Sys.getenv("R_LIBS_USER", unset = "")
+if (nzchar(.user_lib)) {
+  .user_lib <- path.expand(.user_lib)
+  if (dir.exists(.user_lib) && !.user_lib %in% .libPaths()) {
+    .libPaths(c(.user_lib, .libPaths()))
+    .log("INFO", "Aggiunto R_LIBS_USER a .libPaths(): ", .user_lib)
+  }
+}
+
 # 4. Pacchetto ----------------------------------------------------------------
 
 if (!requireNamespace("itaposts", quietly = TRUE)) {
   .log(
     "ERROR",
-    "Pacchetto 'itaposts' non installato. Eseguire prima install.sh."
+    "Pacchetto 'itaposts' non trovato. .libPaths() = ",
+    paste(.libPaths(), collapse = ", "),
+    "; R_LIBS_USER = '",
+    Sys.getenv("R_LIBS_USER"),
+    "'. Verificare che install.sh sia stato eseguito con lo stesso utente."
   )
   quit(status = 2, save = "no")
 }

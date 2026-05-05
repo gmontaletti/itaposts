@@ -14,3 +14,4 @@ renv/library/
 /Meta/
 /dist/
 /incoming/
+.claude/

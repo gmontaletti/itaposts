@@ -16,6 +16,15 @@ una macchina Linux/macOS pulita. Lo zip auto-contenuto viene prodotto da
 ## Prerequisiti
 
 - R >= 4.1 con `Rscript` in `PATH`
+- Client OpenSSH `sftp` in `PATH` (preinstallato su macOS e sulle
+  principali distribuzioni Linux). Il pacchetto non parla SFTP via
+  `libcurl`: il binding R `curl` su CRAN macOS è compilato senza
+  backend `libssh`, quindi `sftp` viene invocato come processo esterno
+  via `processx`.
+- Per auth SFTP a password: `expect` (preinstallato su macOS;
+  `apt install expect` su Debian/Ubuntu) oppure `sshpass`. **Non
+  necessario** se si usa l'auth a chiave SSH (raccomandata su cron):
+  in quel caso basta `sftp`.
 - Connessione di rete verso il server SFTP
 - Permessi di scrittura su `SHARED_DATA_DIR` (path del DuckDB condiviso)
 

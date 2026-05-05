@@ -9,6 +9,55 @@ ITAPOSTS_SFTP_PASSWORD=__changeme__
 ITAPOSTS_SFTP_REMOTE_DIR=/exports/oja
 ITAPOSTS_SFTP_LOCAL_DIR=/var/itaposts/incoming
 
+# Backend SFTP ----------------------------------------------------------------
+# itaposts non parla SFTP via libcurl: il binding R `curl` su macOS CRAN e
+# molte distro Linux e' compilato senza il backend libssh, quindi `oja_sync()`
+# fallirebbe con "Invalid or unsupported value". Il pacchetto invoca invece
+# il client OpenSSH `sftp` via processx. Requisiti runtime:
+#
+#   - `sftp` (pacchetto OpenSSH client): preinstallato su macOS e su
+#     pressoche' tutte le distribuzioni Linux. Nessuna azione richiesta.
+#   - Per auth a password: `expect` (preinstallato su macOS; su Debian/Ubuntu
+#     `apt install expect`) oppure `sshpass`. La password viene passata su
+#     stdin (expect) o via env var SSHPASS (sshpass -e), mai sull'argv.
+#
+# Setup raccomandato per cron: auth a chiave SSH (no helper esterni richiesti).
+
+# Autenticazione SSH ----------------------------------------------------------
+# Modalita' raccomandata su cron headless: chiave SSH senza passphrase.
+# Generare una coppia dedicata e installare la chiave pubblica sul server:
+#   ssh-keygen -t ed25519 -N "" -f /var/itaposts/.ssh/id_ed25519
+#   ssh-copy-id -i /var/itaposts/.ssh/id_ed25519.pub <user>@<host>
+# Quindi:
+# ITAPOSTS_SFTP_PRIVATE_KEY=/var/itaposts/.ssh/id_ed25519
+# ITAPOSTS_SFTP_PUBLIC_KEY=/var/itaposts/.ssh/id_ed25519.pub
+#
+# Se la chiave ha passphrase, caricarla preventivamente in ssh-agent (questo
+# backend non la digita: non passiamo mai segreti sull'argv).
+# ITAPOSTS_SFTP_PRIVATE_KEY_PASSPHRASE=__changeme__   # ignorata dal client
+#
+# Maschera di preferenza degli algoritmi di auth (1=password, 2=publickey,
+# 4=hostbased, 8=keyboard-interactive; sommabili). Tradotta in
+# PreferredAuthentications. Default 9 (password+kbd-int) -> non passata.
+# Esempi:
+#   ITAPOSTS_SFTP_AUTH_TYPES=2     # publickey only
+#   ITAPOSTS_SFTP_AUTH_TYPES=11    # publickey + password + kbd-int
+
+# Verifica della chiave host SSH ----------------------------------------------
+# Path a un known_hosts dedicato. Senza, OpenSSH ricade su
+# ~/.ssh/known_hosts dell'utente che esegue il processo (default `accept-new`
+# su versioni moderne, che memorizza la chiave alla prima connessione).
+# In ambienti cron headless conviene avere un file dedicato e versionato:
+#   ssh-keyscan -p 22 <host> > /var/itaposts/known_hosts
+# ITAPOSTS_SFTP_KNOWN_HOSTS=/var/itaposts/known_hosts
+#
+# Le due variabili sotto sono ignorate dal backend OpenSSH e producono un
+# warning a startup; sono mantenute solo per non rompere .Renviron esistenti.
+# Il pinning del fingerprint host con OpenSSH si fa popolando il file
+# known_hosts indicato sopra.
+# ITAPOSTS_SFTP_HOST_FINGERPRINT_MD5=00112233445566778899aabbccddeeff
+# ITAPOSTS_SFTP_HOST_FINGERPRINT_SHA256=SHA256:Abcdefg/HiJkLmNoPqRsTuVwXyZ0123456789abcdEFG=
+
 # DuckDB -----------------------------------------------------------------------
 # Cartella radice del DuckDB condiviso. Il file vero risiede in
 # $SHARED_DATA_DIR/oja/itposts.duckdb. Default fallback del pacchetto:
@@ -21,3 +70,10 @@ SHARED_DATA_DIR=/var/itaposts/shared_data
 ITAPOSTS_LOCK_DIR=/var/itaposts/run
 # Cartella per i log del wrapper (default: <script_dir>/logs).
 ITAPOSTS_LOG_DIR=/var/itaposts/logs
+
+# Libreria R utente ------------------------------------------------------------
+# install.sh aggiunge automaticamente la riga R_LIBS_USER=... qui sotto al
+# primo run, in modo che Rscript invocato dal cron veda 'itaposts' anche se e'
+# installato fuori dalla site-library di sistema. Lasciarla intatta a meno di
+# spostare la libreria utente.
+# R_LIBS_USER=/home/<utente>/R/x86_64-pc-linux-gnu-library/4.x

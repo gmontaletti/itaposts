@@ -31,7 +31,13 @@ fi
   echo "[$(date -Iseconds 2>/dev/null || date)] INFO  cwd=$SCRIPT_DIR Rscript=$RSCRIPT"
 } >> "$LOG_FILE"
 
-"$RSCRIPT" --vanilla "$SCRIPT_DIR/sync_oja.R" >> "$LOG_FILE" 2>&1
+# NB: niente --vanilla. --vanilla implica --no-environ, e con --no-environ R
+# salta .Renviron all'avvio: R_LIBS_USER non entra in .libPaths() e
+# requireNamespace('itaposts') fallisce anche se il pacchetto e' installato
+# nella libreria utente. Manteniamo --no-init-file/--no-site-file per
+# isolare il run da .Rprofile e Rprofile.site, ma lasciamo passare .Renviron.
+"$RSCRIPT" --no-save --no-restore --no-init-file --no-site-file \
+  "$SCRIPT_DIR/sync_oja.R" >> "$LOG_FILE" 2>&1
 rc=$?
 
 echo "[$(date -Iseconds 2>/dev/null || date)] INFO  exit=$rc" >> "$LOG_FILE"
