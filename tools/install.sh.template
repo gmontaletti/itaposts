@@ -30,15 +30,43 @@ export R_LIBS_USER
 echo "==> Libreria utente: $R_LIBS_USER"
 
 echo "==> Installazione dipendenze CRAN mancanti"
-Rscript --vanilla - <<'RSCRIPT'
+# Se vendor/ esiste, usa quello come repository sorgente locale (install
+# offline). Altrimenti CRAN. Permette override esplicito via env var
+# ITAPOSTS_REPO=... (es. mirror Posit interno).
+VENDOR_DIR="$BUNDLE_DIR/vendor"
+if [ -n "${ITAPOSTS_REPO:-}" ]; then
+  REPO_URL="$ITAPOSTS_REPO"
+  REPO_TYPE="${ITAPOSTS_REPO_TYPE:-source}"
+  REPO_MODE="override"
+elif [ -d "$VENDOR_DIR" ] && [ -f "$VENDOR_DIR/PACKAGES" ]; then
+  REPO_URL="file://$VENDOR_DIR"
+  REPO_TYPE="source"
+  REPO_MODE="vendored (offline)"
+  # Preflight per source install: gcc/g++/make sono richiesti per compilare
+  # data.table, duckdb, processx, stringi su Linux.
+  for tool in cc make; do
+    command -v "$tool" >/dev/null 2>&1 || \
+      echo "AVVISO: '$tool' mancante — install da source potrebbe fallire (Debian/Ubuntu: 'apt install build-essential')." >&2
+  done
+else
+  REPO_URL="https://cloud.r-project.org"
+  REPO_TYPE="both"
+  REPO_MODE="CRAN (online)"
+fi
+echo "==> Sorgente pacchetti: $REPO_MODE — $REPO_URL"
+
+REPO_URL="$REPO_URL" REPO_TYPE="$REPO_TYPE" Rscript --vanilla - <<'RSCRIPT'
 user_lib <- Sys.getenv("R_LIBS_USER")
 dir.create(user_lib, recursive = TRUE, showWarnings = FALSE)
 .libPaths(c(user_lib, .libPaths()))
 deps <- c("cli", "data.table", "DBI", "dplyr", "dbplyr", "duckdb", "processx", "rlang")
 miss <- deps[!vapply(deps, requireNamespace, logical(1), quietly = TRUE)]
 if (length(miss)) {
+  repo <- Sys.getenv("REPO_URL")
+  type <- Sys.getenv("REPO_TYPE", unset = "source")
   message("Installo in ", user_lib, ": ", paste(miss, collapse = ", "))
-  install.packages(miss, lib = user_lib, repos = "https://cloud.r-project.org")
+  install.packages(miss, lib = user_lib, repos = repo, type = type,
+                   dependencies = c("Depends","Imports","LinkingTo"))
 } else {
   message("Tutte le dipendenze CRAN gia' presenti.")
 }

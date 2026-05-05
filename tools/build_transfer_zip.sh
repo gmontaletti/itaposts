@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
-# Costruisce dist/itaposts-cron-<versione>.zip dalla root del repo.
-# Le esclusioni (.Renviron reale, ITC4_*.zip, .Rproj.user, .claude, .git,
-# DuckDB esistente) sono garantite per costruzione: lo stage si popola solo
-# con copie esplicite e R CMD build rispetta .Rbuildignore.
+# Costruisce dist/itaposts-cron-<versione>.zip — bundle monolitico
+# auto-contenuto per installazione su una macchina Linux/macOS pulita.
+#
+# Contenuto del bundle:
+#   - itaposts_<versione>.tar.gz       sorgente del pacchetto R
+#   - vendor/                          mirror CRAN locale dei deps (source)
+#   - vendor/PACKAGES                  metadata generato da tools::write_PACKAGES
+#   - install.sh                       installer idempotente, offline-first
+#   - cron/sync_oja.R, run_sync.sh,    runtime cron + template .Renviron
+#     crontab.example, .Renviron.template
+#   - README.md
+#
+# Esclusioni garantite per costruzione: lo stage si popola solo con copie
+# esplicite e R CMD build rispetta .Rbuildignore (no .Renviron reale,
+# no ITC4_*.zip, no .Rproj.user, no .claude, no .git, no DuckDB).
+#
+# Cache: i tarball CRAN vengono scaricati una volta in tools/vendor-cache/
+# (gitignored) e riutilizzati nei build successivi se la versione coincide.
 
 set -euo pipefail
 
@@ -22,11 +36,15 @@ fi
 NAME="itaposts-cron-${VERSION}"
 DIST="$PKG_ROOT/dist"
 STAGE="$DIST/$NAME"
+CACHE="$PKG_ROOT/tools/vendor-cache"
+
+# Skip vendoring quando esplicitamente richiesto (build più rapido per test).
+WITH_VENDOR="${WITH_VENDOR:-1}"
 
 rm -rf "$STAGE" "$DIST/${NAME}.zip"
-mkdir -p "$STAGE/cron"
+mkdir -p "$STAGE/cron" "$CACHE"
 
-echo "==> R CMD build (puo' richiedere alcuni secondi)"
+echo "==> R CMD build (può richiedere alcuni secondi)"
 ( cd "$DIST" && R CMD build "$PKG_ROOT" >/dev/null )
 mv "$DIST"/itaposts_*.tar.gz "$STAGE/"
 
@@ -41,6 +59,53 @@ cp "$PKG_ROOT/inst/cron/README.md"       "$STAGE/README.md"
 cp "$PKG_ROOT/tools/install.sh.template" "$STAGE/install.sh"
 
 chmod +x "$STAGE/cron/run_sync.sh" "$STAGE/install.sh"
+
+if [ "$WITH_VENDOR" = "1" ]; then
+  echo "==> Vendoring CRAN deps (closure su Imports/Depends/LinkingTo)"
+  mkdir -p "$STAGE/vendor"
+  CACHE_DIR="$CACHE" STAGE_DIR="$STAGE/vendor" Rscript --vanilla - <<'RSCRIPT'
+cache <- Sys.getenv("CACHE_DIR")
+out   <- Sys.getenv("STAGE_DIR")
+deps_top <- c("cli","data.table","DBI","dplyr","dbplyr","duckdb","processx","rlang")
+ap <- available.packages(repos = "https://cloud.r-project.org")
+closure <- unique(c(
+  deps_top,
+  unlist(tools::package_dependencies(
+    deps_top, db = ap,
+    which = c("Depends","Imports","LinkingTo"),
+    recursive = TRUE
+  ))
+))
+# Escludi i pacchetti base/recommended (forniti con R).
+base_pkgs <- rownames(installed.packages(priority = c("base","recommended")))
+closure <- setdiff(closure, base_pkgs)
+closure <- intersect(closure, rownames(ap))
+message("Closure: ", length(closure), " pacchetti")
+
+# Per ogni dep: usa la copia in cache se la versione coincide, altrimenti
+# scarica il tarball sorgente in cache; poi copia in stage.
+for (pkg in closure) {
+  ver <- ap[pkg, "Version"]
+  fname <- sprintf("%s_%s.tar.gz", pkg, ver)
+  cached <- file.path(cache, fname)
+  if (!file.exists(cached)) {
+    message("  download ", fname)
+    download.packages(pkg, destdir = cache, repos = "https://cloud.r-project.org",
+                      type = "source", quiet = TRUE)
+  } else {
+    message("  cache hit ", fname)
+  }
+  file.copy(cached, file.path(out, fname), overwrite = TRUE)
+}
+tools::write_PACKAGES(out, type = "source")
+message("Vendor pronto: ", length(list.files(out, pattern = "\\.tar\\.gz$")),
+        " tarball + PACKAGES")
+RSCRIPT
+  echo "==> Vendor:"
+  du -sh "$STAGE/vendor" | sed 's/^/    /'
+else
+  echo "==> Vendoring saltato (WITH_VENDOR=0)"
+fi
 
 echo "==> Zip finale"
 ( cd "$DIST" && zip -rq "${NAME}.zip" "$NAME" )
