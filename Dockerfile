@@ -14,8 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ENV TZ=Europe/Rome \
-    LANG=C.UTF-8 \
-    R_LIBS_SITE=/usr/local/lib/R/site-library
+    LANG=C.UTF-8
 
 # 2. CRAN deps ----------------------------------------------------------------
 # r2u risolve queste come binari apt via bspm: minuti, non ore.
