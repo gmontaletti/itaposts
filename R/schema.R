@@ -1,11 +1,11 @@
 # 1. DDL del database OJA -----------------------------------------------------
 
-# Lo schema completo: due tabelle dei fatti, dieci dimensioni, una di metadata.
-# Ogni statement e' idempotente (CREATE TABLE IF NOT EXISTS).
+# Lo schema completo: due tabelle dei fatti, undici dimensioni, una di
+# metadata. Ogni statement e' idempotente (CREATE TABLE IF NOT EXISTS).
 
 .oja_ddl <- function() {
   c(
-    # 1.1 Dimensioni statiche
+    # 1.1 Dimensioni derivate dalle postings (UPSERT incrementale)
     dim_geography = "
       CREATE TABLE IF NOT EXISTS dim_geography (
         idcity          VARCHAR PRIMARY KEY,
@@ -60,6 +60,17 @@
         salary    VARCHAR
       )
     ",
+    dim_source = "
+      CREATE TABLE IF NOT EXISTS dim_source (
+        source                    VARCHAR PRIMARY KEY,
+        source_category_analysis  VARCHAR,
+        source_relevance          VARCHAR
+      )
+    ",
+
+    # 1.2 Dimensioni globali del fornitore (ricaricate integralmente a ogni
+    # ingest da /data_v2/dim_table: le postings e le skills portano soltanto
+    # le chiavi esterne, non piu' le descrizioni gerarchiche).
     dim_cp2021 = "
       CREATE TABLE IF NOT EXISTS dim_cp2021 (
         cp2021_id_level_5  VARCHAR PRIMARY KEY,
@@ -80,52 +91,44 @@
         esco_level_5    VARCHAR,
         idesco_level_4  VARCHAR,
         esco_level_4    VARCHAR,
-        uri             VARCHAR
-      )
-    ",
-    dim_source = "
-      CREATE TABLE IF NOT EXISTS dim_source (
-        source                    VARCHAR PRIMARY KEY,
-        source_category_analysis  VARCHAR,
-        source_relevance          VARCHAR
+        idesco_level_3  VARCHAR,
+        esco_level_3    VARCHAR,
+        idesco_level_2  VARCHAR,
+        esco_level_2    VARCHAR,
+        idesco_level_1  VARCHAR,
+        esco_level_1    VARCHAR
       )
     ",
     dim_esco_skill = "
       CREATE TABLE IF NOT EXISTS dim_esco_skill (
-        idescoskill_level_3        VARCHAR PRIMARY KEY,
-        escoskill_level_3          VARCHAR,
-        esco_v0101_obsolete        VARCHAR,
-        esco_v0101_description     VARCHAR,
-        onet_hier_level_1          VARCHAR,
-        onet_hier_level_2          VARCHAR,
-        onet_hier_level_3          VARCHAR,
-        pillar_softskills          VARCHAR,
-        pillar_digitalskills       VARCHAR,
-        pillar_bigdata             VARCHAR,
-        esco_v0101_uri             VARCHAR,
-        esco_v0101_skillstype      VARCHAR,
-        esco_v0101_reusetype       VARCHAR,
-        esco_v0101_digcomp         VARCHAR,
-        esco_v0101_green           VARCHAR,
-        esco_v0101_ict             VARCHAR,
-        esco_v0101_language        VARCHAR,
-        esco_v0101_transversal     VARCHAR,
-        esco_v0101_hier_code_3     VARCHAR,
-        esco_v0101_hier_uri_3      VARCHAR,
-        esco_v0101_hier_label_3    VARCHAR,
-        esco_v0101_hier_code_2     VARCHAR,
-        esco_v0101_hier_uri_2      VARCHAR,
-        esco_v0101_hier_label_2    VARCHAR,
-        esco_v0101_hier_code_1     VARCHAR,
-        esco_v0101_hier_uri_1      VARCHAR,
-        esco_v0101_hier_label_1    VARCHAR,
-        esco_v0101_hier_code_0     VARCHAR,
-        esco_v0101_hier_uri_0      VARCHAR,
-        esco_v0101_hier_label_0    VARCHAR
+        idescoskill_level_3          VARCHAR PRIMARY KEY,
+        esco_v010200_label           VARCHAR,
+        esco_v010200_uri             VARCHAR,
+        esco_v010200_obsolete        VARCHAR,
+        esco_v010200_skillstype      VARCHAR,
+        esco_v010200_reusetype       VARCHAR,
+        esco_v010200_description     VARCHAR,
+        esco_v010200_digcomp         VARCHAR,
+        esco_v010200_green           VARCHAR,
+        esco_v010200_hier_code_3     VARCHAR,
+        esco_v010200_hier_uri_3      VARCHAR,
+        esco_v010200_hier_label_3    VARCHAR,
+        esco_v010200_hier_code_2     VARCHAR,
+        esco_v010200_hier_uri_2      VARCHAR,
+        esco_v010200_hier_label_2    VARCHAR,
+        esco_v010200_hier_code_1     VARCHAR,
+        esco_v010200_hier_uri_1      VARCHAR,
+        esco_v010200_hier_label_1    VARCHAR,
+        esco_v010200_hier_uri_0      VARCHAR,
+        esco_v010200_hier_label_0    VARCHAR,
+        esco_v010200_digital         VARCHAR,
+        esco_v010200_language        VARCHAR,
+        esco_v010200_transversal     VARCHAR,
+        esco_v010200_research        VARCHAR
       )
     ",
 
-    # 1.2 Metadata
+    # 1.3 Metadata
     dim_snapshot = "
       CREATE TABLE IF NOT EXISTS dim_snapshot (
         snapshot_id           VARCHAR PRIMARY KEY,
@@ -141,7 +144,7 @@
       )
     ",
 
-    # 1.3 Fatti
+    # 1.4 Fatti
     fact_postings = "
       CREATE TABLE IF NOT EXISTS fact_postings (
         snapshot_id          VARCHAR NOT NULL,
@@ -180,9 +183,15 @@
 #' Inizializza il database DuckDB OJA
 #'
 #' Crea (se non esistono) tutte le tabelle dello schema OJA: due tabelle dei
-#' fatti (`fact_postings`, `fact_skills`), dieci dimensioni e la tabella di
+#' fatti (`fact_postings`, `fact_skills`), undici dimensioni e la tabella di
 #' metadata `dim_snapshot`. La funzione e' idempotente: chiamarla su un
 #' database gia' inizializzato non produce errori ne' modifica i dati.
+#'
+#' Le dimensioni si dividono in due gruppi: quelle derivate dalle postings
+#' (geografia, contratto, istruzione, settore, esperienza, orario, salario,
+#' fonte), popolate per UPSERT incrementale a ogni snapshot, e quelle globali
+#' del fornitore (`dim_cp2021`, `dim_esco_occupation`, `dim_esco_skill`),
+#' ricaricate integralmente dai file `dim_table` a ogni ingest.
 #'
 #' Apre una connessione in scrittura sul percorso `path` e la chiude prima di
 #' restituire. Se il chiamante ha gia' una connessione in scrittura aperta puo'

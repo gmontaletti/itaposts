@@ -80,8 +80,11 @@ Variabili minime da compilare:
 ITAPOSTS_SFTP_HOST=custom-delivery.lightcast.io
 ITAPOSTS_SFTP_USER=regionelombardia@lightcast.io
 ITAPOSTS_SFTP_PASSWORD=<password ricevuta da Lightcast>
-ITAPOSTS_SFTP_REMOTE_DIR=/data_v1/ITC4
+ITAPOSTS_SFTP_REMOTE_DIR=/data_v2/fact_table/ITC4
 ```
+
+`ITAPOSTS_SFTP_DIM_DIR` è opzionale: se omessa vale `/data_v2/dim_table`, la
+directory delle tre tabelle dimensionali globali (non suddivise per regione).
 
 Lightcast non registra chiavi pubbliche lato server: l'unica modalita'
 supportata e' l'auth a password.

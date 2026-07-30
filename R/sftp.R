@@ -26,10 +26,16 @@
 
 #' Configurazione SFTP da variabili d'ambiente
 #'
-#' Legge le credenziali e il percorso remoto degli snapshot OJA dalle
+#' Legge le credenziali e i percorsi remoti degli snapshot OJA dalle
 #' variabili `ITAPOSTS_SFTP_*`. Le variabili `HOST`, `USER`, `PASSWORD` e
-#' `REMOTE_DIR` sono obbligatorie; `PORT` ha default `22` e `LOCAL_DIR`
-#' default `file.path(tempdir(), "itaposts_incoming")`.
+#' `REMOTE_DIR` sono obbligatorie; `PORT` ha default `22`, `LOCAL_DIR`
+#' default `file.path(tempdir(), "itaposts_incoming")` e `DIM_DIR` default
+#' `"/data_v2/dim_table"`.
+#'
+#' `REMOTE_DIR` punta alla directory degli archivi mensili di una singola
+#' regione (`fact_table/<NUTS2>`), mentre `DIM_DIR` punta alle tabelle
+#' dimensionali globali, che non sono suddivise per regione e vivono in una
+#' directory sorella.
 #'
 #' Convenzione `.Renviron`:
 #'
@@ -38,17 +44,29 @@
 #' ITAPOSTS_SFTP_PORT=22
 #' ITAPOSTS_SFTP_USER=...
 #' ITAPOSTS_SFTP_PASSWORD=...
-#' ITAPOSTS_SFTP_REMOTE_DIR=/exports/oja
+#' ITAPOSTS_SFTP_REMOTE_DIR=/data_v2/fact_table/ITC4
+#' ITAPOSTS_SFTP_DIM_DIR=/data_v2/dim_table
 #' ITAPOSTS_SFTP_LOCAL_DIR=~/Documents/funzioni/itaposts/incoming
 #' ```
 #'
 #' Il backend SFTP del pacchetto si appoggia al client OpenSSH `sftp`
-#' invocato via [processx::run()] (libcurl su macOS CRAN non e' compilato
-#' con il backend libssh, quindi non parla SFTP). Il client OpenSSH e'
-#' presente di default su macOS e su pressoche' tutte le distribuzioni
-#' Linux: nessun pacchetto da installare per l'autenticazione a chiave.
-#' Per l'autenticazione a password serve `expect` (preinstallato su macOS;
-#' `apt install expect` su Debian/Ubuntu) oppure `sshpass`.
+#' invocato via [processx::process] (libcurl su macOS CRAN non è compilato
+#' con il backend libssh, quindi non parla SFTP). Il client OpenSSH è
+#' presente di default su macOS e su pressoché tutte le distribuzioni
+#' Linux: nessun pacchetto aggiuntivo da installare.
+#'
+#' Le due modalità di autenticazione usano due modalità di invocazione
+#' diverse del client:
+#'
+#' - **chiave privata**: `sftp -b <batchfile>` con `BatchMode=yes`, non
+#'   interattivo. La passphrase va caricata a parte in `ssh-agent`.
+#' - **password**: sessione interattiva su pseudo-terminale
+#'   ([processx::process] con `pty = TRUE`), perché `sftp -b` implica
+#'   `BatchMode=yes` lato SSH e con quella direttiva OpenSSH rifiuta di
+#'   chiedere la password. I comandi vengono inviati uno per volta sul pty
+#'   attendendo il prompt `sftp>`. La password non compare mai sull'argv,
+#'   nell'ambiente o su disco. Modalità non disponibile su Windows, dove
+#'   `processx` non espone i pty.
 #'
 #' La fiducia sulla chiave host SSH si configura tramite
 #' `ITAPOSTS_SFTP_KNOWN_HOSTS` (percorso a un file `known_hosts`): viene
@@ -57,17 +75,14 @@
 #' OpenSSH moderno (`accept-new`), che memorizza la chiave la prima volta.
 #' Le variabili `ITAPOSTS_SFTP_HOST_FINGERPRINT_MD5` e
 #' `ITAPOSTS_SFTP_HOST_FINGERPRINT_SHA256` sono mantenute per retro-
-#' compatibilita' del contratto di `oja_sftp_config()` ma non vengono
-#' piu' usate (il vecchio backend libcurl le rispettava): per pinnare
+#' compatibilità del contratto di `oja_sftp_config()` ma non vengono
+#' più usate (il vecchio backend libcurl le rispettava): per pinnare
 #' l'host key con il backend OpenSSH usare `ITAPOSTS_SFTP_KNOWN_HOSTS`.
 #'
 #' Autenticazione SSH: per public-key impostare
 #' `ITAPOSTS_SFTP_PRIVATE_KEY` (path al file privato; opzionali
 #' `ITAPOSTS_SFTP_PUBLIC_KEY`, `ITAPOSTS_SFTP_PRIVATE_KEY_PASSPHRASE`).
-#' Quando una chiave privata e' configurata, `sftp` viene lanciato in
-#' modalita' batch (`BatchMode=yes`) e la passphrase deve essere caricata
-#' a parte in `ssh-agent` (questo backend non la digita per conto
-#' dell'utente, per non scriverla mai sull'argv). La maschera di bit
+#' La maschera di bit
 #' `ITAPOSTS_SFTP_AUTH_TYPES` (1=password, 2=publickey, 4=hostbased,
 #' 8=keyboard-interactive; sommabili) viene tradotta in
 #' `PreferredAuthentications` quando differisce dal default 9
@@ -82,12 +97,12 @@
 #'   nei test.
 #'
 #' @return Lista con campi `host`, `port`, `user`, `password`, `remote_dir`,
-#'   `local_dir`, `known_hosts`, `host_fingerprint_md5`,
+#'   `dim_dir`, `local_dir`, `known_hosts`, `host_fingerprint_md5`,
 #'   `host_fingerprint_sha256`, `private_key`, `public_key`,
-#'   `private_key_passphrase`, `auth_types`. I tre campi
-#'   `host_fingerprint_*` e `auth_types` sono informativi: il backend
-#'   OpenSSH usa `known_hosts` ed eventualmente
-#'   `PreferredAuthentications` derivato da `auth_types`.
+#'   `private_key_passphrase`, `auth_types`. I due campi
+#'   `host_fingerprint_*` sono informativi: il backend OpenSSH usa
+#'   `known_hosts` ed eventualmente `PreferredAuthentications` derivato da
+#'   `auth_types`.
 #' @export
 #' @examples
 #' \dontrun{
@@ -126,6 +141,14 @@ oja_sftp_config <- function(env = Sys.getenv) {
     unset = file.path(tempdir(), "itaposts_incoming")
   )
   local_dir <- path.expand(local_dir)
+
+  # Le tabelle dimensionali sono globali (non region-scoped) e stanno in una
+  # directory sorella di `remote_dir`: default valido per tutte le regioni.
+  dim_dir <- .strip_outer_quotes(env("ITAPOSTS_SFTP_DIM_DIR", unset = ""))
+  if (!nzchar(dim_dir)) {
+    dim_dir <- "/data_v2/dim_table"
+  }
+  dim_dir <- sub("/+$", "", dim_dir)
 
   known_hosts <- env("ITAPOSTS_SFTP_KNOWN_HOSTS", unset = "")
   if (nzchar(known_hosts)) {
@@ -197,6 +220,7 @@ oja_sftp_config <- function(env = Sys.getenv) {
     user = unname(vals["user"]),
     password = unname(vals["password"]),
     remote_dir = sub("/+$", "", unname(vals["remote_dir"])),
+    dim_dir = dim_dir,
     local_dir = local_dir,
     known_hosts = known_hosts,
     host_fingerprint_md5 = fp_md5,
@@ -239,16 +263,21 @@ oja_sftp_config <- function(env = Sys.getenv) {
 }
 
 # Costruisce l'argv (senza il binario `sftp`) per una singola invocazione
-# batch del client OpenSSH. Restituisce un vettore di carattere.
+# del client OpenSSH. Restituisce un vettore di carattere.
+#
+# `batchfile = NULL` produce l'argv della sessione interattiva su pty: `-b`
+# implica `BatchMode=yes` lato SSH, che disabilita il prompt della password.
 #
 # La forma finale e' `<flag>... <user>@<host>` (no `sftp://` URL: legacy
 # quoting issues quando lo username contiene `@`).
-.sftp_argv <- function(config, batchfile) {
+.sftp_argv <- function(config, batchfile = NULL) {
   port <- as.integer(config$port %||% 22L)
+  argv <- "-q"
+  if (!is.null(batchfile)) {
+    argv <- c(argv, "-b", batchfile)
+  }
   argv <- c(
-    "-q",
-    "-b",
-    batchfile,
+    argv,
     "-P",
     as.character(port),
     "-o",
@@ -266,6 +295,10 @@ oja_sftp_config <- function(env = Sys.getenv) {
       "-o",
       paste0("UserKnownHostsFile=", config$known_hosts)
     )
+  } else {
+    # Su pty il default upstream `ask` bloccherebbe la sessione su una
+    # domanda yes/no al primo contatto con l'host.
+    argv <- c(argv, "-o", "StrictHostKeyChecking=accept-new")
   }
   if (isTRUE(nzchar(config$private_key %||% ""))) {
     argv <- c(
@@ -284,62 +317,38 @@ oja_sftp_config <- function(env = Sys.getenv) {
   argv
 }
 
-# Sceglie il runner adatto in funzione della modalita' di auth disponibile.
-# Restituisce una lista `list(cmd, args, stdin, env)` da passare a
-# processx::run().
-.sftp_runner <- function(config, batchfile) {
-  argv <- .sftp_argv(config, batchfile)
-  has_key <- isTRUE(nzchar(config$private_key %||% ""))
-  has_password <- isTRUE(nzchar(config$password %||% ""))
+# L'auth a password richiede la sessione interattiva su pty: `sftp -b`
+# implica `BatchMode=yes` lato SSH e con quella direttiva OpenSSH non chiede
+# la password, fallendo subito con "Permission denied".
+.sftp_use_pty <- function(config) {
+  !isTRUE(nzchar(config$private_key %||% "")) &&
+    isTRUE(nzchar(config$password %||% ""))
+}
 
-  if (has_key || !has_password) {
+# Costruisce lo `spec` da eseguire: `list(cmd, args, password, env, mode)`.
+# `mode` discrimina fra invocazione batch (chiave o auth delegata a ssh) e
+# sessione interattiva su pty (auth a password).
+.sftp_runner <- function(config, batchfile = NULL) {
+  argv <- .sftp_argv(config, batchfile)
+
+  if (.sftp_use_pty(config)) {
     return(list(
       cmd = "sftp",
       args = argv,
-      password = NULL,
-      env = NULL
-    ))
-  }
-
-  # Auth a password: serve un helper esterno perche' OpenSSH `sftp` legge
-  # la password solo dal terminale, mai da stdin/env.
-  expect_bin <- Sys.which("expect")
-  sshpass_bin <- Sys.which("sshpass")
-
-  if (nzchar(expect_bin)) {
-    helper <- system.file(
-      "sftp_password.expect",
-      package = "itaposts",
-      mustWork = FALSE
-    )
-    if (!nzchar(helper) || !file.exists(helper)) {
-      cli::cli_abort(
-        "Helper {.path inst/sftp_password.expect} non trovato nel pacchetto."
-      )
-    }
-    return(list(
-      cmd = unname(expect_bin),
-      args = c("-f", helper, "--", "sftp", argv),
       password = config$password,
-      env = NULL
+      # TERM=dumb riduce le sequenze di escape che libedit emette sul pty.
+      env = c("current", TERM = "dumb"),
+      mode = "pty"
     ))
   }
 
-  if (nzchar(sshpass_bin)) {
-    return(list(
-      cmd = unname(sshpass_bin),
-      args = c("-e", "sftp", argv),
-      password = NULL,
-      # `-e` legge da SSHPASS — niente password sull'argv, niente sul disco.
-      env = c("current", SSHPASS = config$password)
-    ))
-  }
-
-  cli::cli_abort(c(
-    "Auth SFTP a password richiesta ma nessun helper esterno disponibile.",
-    "i" = "Preferire l'auth a chiave: {.envvar ITAPOSTS_SFTP_PRIVATE_KEY}.",
-    "i" = "Altrimenti installare {.code expect} (gia' presente su macOS; su Debian/Ubuntu: {.code apt install expect}) o {.code sshpass}."
-  ))
+  list(
+    cmd = "sftp",
+    args = argv,
+    password = NULL,
+    env = NULL,
+    mode = "batch"
+  )
 }
 
 # Invoca il client `sftp` con un batch di comandi. `batch_lines` e' un
@@ -357,13 +366,22 @@ oja_sftp_config <- function(env = Sys.getenv) {
       "Argomento {.arg batch_lines} vuoto o non di tipo carattere."
     )
   }
-  batchfile <- tempfile("itaposts_sftp_", fileext = ".batch")
-  on.exit(try(unlink(batchfile), silent = TRUE), add = TRUE)
-  writeLines(batch_lines, batchfile)
-  Sys.chmod(batchfile, "0600")
 
-  spec <- runner(config, batchfile)
-  res <- .sftp_invoke(spec, timeout = timeout)
+  if (.sftp_use_pty(config)) {
+    spec <- runner(config, NULL)
+  } else {
+    batchfile <- tempfile("itaposts_sftp_", fileext = ".batch")
+    on.exit(try(unlink(batchfile), silent = TRUE), add = TRUE)
+    writeLines(batch_lines, batchfile)
+    Sys.chmod(batchfile, "0600")
+    spec <- runner(config, batchfile)
+  }
+
+  res <- if (identical(spec$mode %||% "batch", "pty")) {
+    .sftp_invoke_pty(spec, batch_lines, timeout = timeout)
+  } else {
+    .sftp_invoke(spec, timeout = timeout)
+  }
 
   if (!isTRUE(res$status == 0L)) {
     .sftp_abort_with_output(res, spec$cmd)
@@ -371,16 +389,12 @@ oja_sftp_config <- function(env = Sys.getenv) {
   list(stdout = res$stdout %||% "", status = res$status)
 }
 
-# Esegue uno `spec` (output di .sftp_runner). Usa processx::process$new()
-# perche' richiede di scrivere la password su stdin del processo (per la
-# variante expect): processx::run() non espone l'API di stdin pipe.
+# Esegue uno `spec` in modalita' batch (`sftp -b`), senza terminale.
 # Restituisce list(stdout, stderr, status).
 .sftp_invoke <- function(spec, timeout = 1800) {
-  stdin_arg <- if (!is.null(spec$password)) "|" else NULL
   proc <- processx::process$new(
     command = spec$cmd,
     args = spec$args,
-    stdin = stdin_arg,
     stdout = "|",
     stderr = "|",
     env = spec$env,
@@ -393,18 +407,10 @@ oja_sftp_config <- function(env = Sys.getenv) {
     add = TRUE
   )
 
-  if (!is.null(spec$password)) {
-    # Scrive una sola riga su stdin (l'helper expect fa `gets stdin`)
-    # poi chiude la connessione cosi' il processo non resta in attesa.
-    try(
-      proc$write_input(paste0(spec$password, "\n")),
-      silent = TRUE
-    )
-    try(close(proc$get_input_connection()), silent = TRUE)
-  }
-
-  finished <- proc$wait(timeout = timeout * 1000)
-  if (!finished) {
+  # `$wait()` restituisce il processo, non un flag di completamento: il
+  # timeout si rileva verificando se il processo e' ancora vivo dopo l'attesa.
+  proc$wait(timeout = timeout * 1000)
+  if (proc$is_alive()) {
     try(proc$kill_tree(), silent = TRUE)
     cli::cli_abort(
       "Timeout ({timeout}s) in attesa di {.code {spec$cmd}}."
@@ -417,25 +423,28 @@ oja_sftp_config <- function(env = Sys.getenv) {
   )
 }
 
+# Tronca un blocco di output a `n` righe e neutralizza le graffe: il
+# risultato finisce nel corpo di un cli_abort(), dove ogni elemento viene
+# interpolato da glue.
+.sftp_trunc_lines <- function(x, n = 50L) {
+  if (is.null(x) || !length(x) || !nzchar(x)) {
+    return(character())
+  }
+  lines <- strsplit(x, "\r?\n", perl = TRUE)[[1]]
+  if (length(lines) > n) {
+    lines <- c(
+      utils::head(lines, n),
+      sprintf("... (%d righe omesse)", length(lines) - n)
+    )
+  }
+  gsub("}", "}}", gsub("{", "{{", lines, fixed = TRUE), fixed = TRUE)
+}
+
 # Solleva un cli_abort con stdout+stderr troncati a ~50 righe per non
 # travolgere il chiamante con il rumore del client OpenSSH.
 .sftp_abort_with_output <- function(res, cmd) {
-  trunc <- function(x, n = 50L) {
-    if (is.null(x) || !nzchar(x)) {
-      return(character())
-    }
-    lines <- strsplit(x, "\r?\n", perl = TRUE)[[1]]
-    if (length(lines) > n) {
-      c(
-        utils::head(lines, n),
-        sprintf("... (%d righe omesse)", length(lines) - n)
-      )
-    } else {
-      lines
-    }
-  }
-  out <- trunc(res$stdout)
-  err <- trunc(res$stderr)
+  out <- .sftp_trunc_lines(res$stdout)
+  err <- .sftp_trunc_lines(res$stderr)
   body <- character()
   if (length(err)) {
     body <- c(body, "stderr:", err)
@@ -477,7 +486,197 @@ oja_sftp_config <- function(env = Sys.getenv) {
   )
 }
 
-# 3. Listing remoto ----------------------------------------------------------
+# 3. Sessione interattiva su pty (auth a password) ---------------------------
+
+# Prompt della password/passphrase e prompt interattivo del client. Ancorati
+# a fine buffer: la riga "Warning: Permanently added ... to the list of known
+# hosts." che precede il prompt al primo contatto termina con newline e non
+# puo' quindi produrre un falso positivo.
+.sftp_rx_password <- "[Pp]ass(word|phrase)[^:]*:\\s*$"
+.sftp_rx_prompt <- "sftp>\\s*$"
+
+# Marcatori d'errore di OpenSSH sftp. In modalita' interattiva un comando
+# fallito non altera l'exit status (un `cd` su path inesistente stampa
+# "stat remote: No such file or directory" e la sessione esce 0), quindi
+# l'errore va riconosciuto dall'output del singolo comando.
+.sftp_rx_error <- paste(
+  "No such file or directory",
+  "Permission denied",
+  "not found",
+  "Couldn't ",
+  "Cannot download",
+  "Invalid command",
+  "Connection closed",
+  "Connection reset",
+  "Broken pipe",
+  "Host key verification failed",
+  sep = "|"
+)
+
+# Maschera la password in un testo destinato a un messaggio d'errore. Il pty
+# non riecheggia la password (il client disabilita l'echo), ma un log che la
+# contenesse sarebbe un incidente: la sostituzione e' incondizionata.
+.sftp_redact <- function(x, password) {
+  if (is.null(password) || !nzchar(password)) {
+    return(x)
+  }
+  gsub(password, "<password>", x, fixed = TRUE)
+}
+
+# processx incanala stdout e stderr del processo sullo stesso pty; la lettura
+# e' non bloccante e restituisce "" quando non c'e' nulla di pronto.
+.sftp_pty_read <- function(proc) {
+  out <- tryCatch(proc$read_output(), error = function(e) "")
+  if (is.null(out) || !length(out)) "" else paste(out, collapse = "")
+}
+
+# Accumula l'output del pty finche' `pattern` non compare in coda al buffer.
+# Restituisce il buffer completo; aborta su timeout o su morte prematura del
+# client (auth fallita, host key rifiutata, connessione caduta).
+.sftp_pty_wait <- function(proc, pattern, timeout, what, password = NULL) {
+  buffer <- ""
+  deadline <- Sys.time() + timeout
+  repeat {
+    buffer <- paste0(buffer, .sftp_pty_read(proc))
+    if (grepl(pattern, buffer, perl = TRUE)) {
+      return(buffer)
+    }
+    if (!proc$is_alive()) {
+      # Ultima lettura: l'output bufferato sopravvive all'uscita del processo.
+      buffer <- paste0(buffer, .sftp_pty_read(proc))
+      if (grepl(pattern, buffer, perl = TRUE)) {
+        return(buffer)
+      }
+      cli::cli_abort(c(
+        "Sessione {.code sftp} terminata (exit {proc$get_exit_status()}) prima di {what}.",
+        .sftp_trunc_lines(.sftp_redact(buffer, password))
+      ))
+    }
+    if (Sys.time() >= deadline) {
+      try(proc$kill_tree(), silent = TRUE)
+      cli::cli_abort(c(
+        "Timeout ({timeout}s) in attesa di {what}.",
+        .sftp_trunc_lines(.sftp_redact(buffer, password))
+      ))
+    }
+    proc$poll_io(500)
+  }
+}
+
+# Normalizza il testo letto fra due prompt: rimuove le sequenze di escape del
+# terminale, i `\r` del pty, i prompt e l'eventuale eco del comando inviato,
+# lasciando il solo output del comando (parsabile come in modalita' batch).
+.sftp_pty_chunk <- function(text, command) {
+  text <- gsub("\033\\[[0-9;?]*[a-zA-Z]", "", text, perl = TRUE)
+  text <- gsub("\r", "", text, fixed = TRUE)
+  lines <- strsplit(text, "\n", fixed = TRUE)[[1]]
+  lines <- sub("sftp>\\s*$", "", sub("^sftp>\\s*", "", lines))
+  lines <- lines[nzchar(trimws(lines))]
+  if (length(lines) && identical(trimws(lines[[1]]), trimws(command))) {
+    lines <- lines[-1]
+  }
+  if (!length(lines)) {
+    return("")
+  }
+  paste0(paste(lines, collapse = "\n"), "\n")
+}
+
+# Verifica l'esito di un singolo comando: in modalita' interattiva l'unico
+# segnale disponibile e' il testo emesso dal client.
+.sftp_pty_check <- function(chunk, command) {
+  if (!nzchar(chunk) || !grepl(.sftp_rx_error, chunk, perl = TRUE)) {
+    return(invisible(NULL))
+  }
+  cli::cli_abort(c(
+    "Comando {.code {command}} fallito nella sessione {.code sftp}.",
+    .sftp_trunc_lines(chunk)
+  ))
+}
+
+# Esegue `batch_lines` in una sessione `sftp` interattiva su pseudo-terminale:
+# risponde al prompt della password, poi invia un comando per volta attendendo
+# ogni volta il prompt successivo. Restituisce list(stdout, stderr, status)
+# con la stessa forma di .sftp_invoke().
+.sftp_invoke_pty <- function(spec, batch_lines, timeout = 1800) {
+  if (.Platform$OS.type == "windows") {
+    cli::cli_abort(c(
+      "Auth SFTP a password non supportata su Windows.",
+      "i" = "{.pkg processx} non espone pty su Windows: usare l'auth a chiave ({.envvar ITAPOSTS_SFTP_PRIVATE_KEY})."
+    ))
+  }
+  password <- spec$password
+  proc <- processx::process$new(
+    command = spec$cmd,
+    args = spec$args,
+    pty = TRUE,
+    env = spec$env,
+    cleanup = TRUE
+  )
+  on.exit(
+    {
+      if (proc$is_alive()) try(proc$kill_tree(), silent = TRUE)
+    },
+    add = TRUE
+  )
+
+  deadline <- Sys.time() + timeout
+  remaining <- function() {
+    max(1, as.numeric(difftime(deadline, Sys.time(), units = "secs")))
+  }
+
+  # L'handshake ha un budget proprio: se l'host non risponde non serve
+  # consumare il timeout complessivo, pensato per il download degli archivi.
+  # Si attende il prompt della password *o* quello dei comandi: con una chiave
+  # in ssh-agent l'auth puo' concludersi senza chiedere nulla.
+  seen <- .sftp_pty_wait(
+    proc,
+    sprintf("(%s)|(%s)", .sftp_rx_password, .sftp_rx_prompt),
+    min(remaining(), 120),
+    "il prompt della password o il prompt `sftp>`",
+    password
+  )
+  if (grepl(.sftp_rx_password, seen, perl = TRUE)) {
+    proc$write_input(paste0(password, "\r"))
+    .sftp_pty_wait(
+      proc,
+      .sftp_rx_prompt,
+      min(remaining(), 120),
+      "il prompt `sftp>` dopo l'autenticazione",
+      password
+    )
+  }
+
+  out <- character(length(batch_lines))
+  for (i in seq_along(batch_lines)) {
+    cmd <- batch_lines[[i]]
+    # Se la sessione e' caduta la scrittura sul pty falla: l'attesa
+    # successiva produce il messaggio d'errore con l'output raccolto.
+    try(proc$write_input(paste0(cmd, "\r")), silent = TRUE)
+    raw_chunk <- .sftp_pty_wait(
+      proc,
+      .sftp_rx_prompt,
+      remaining(),
+      sprintf("l'output del comando `%s`", cmd),
+      password
+    )
+    chunk <- .sftp_pty_chunk(raw_chunk, cmd)
+    .sftp_pty_check(chunk, cmd)
+    out[[i]] <- chunk
+  }
+
+  stdout <- paste0(out, collapse = "")
+  try(proc$write_input("quit\r"), silent = TRUE)
+  proc$wait(timeout = 10000)
+  if (proc$is_alive()) {
+    # I comandi sono gia' stati eseguiti e validati: una chiusura pigra non
+    # e' un fallimento da propagare al chiamante.
+    try(proc$kill_tree(), silent = TRUE)
+    return(list(stdout = stdout, stderr = "", status = 0L))
+  }
+  list(stdout = stdout, stderr = "", status = proc$get_exit_status())
+}
+
+# 4. Listing remoto ----------------------------------------------------------
 
 #' Elenca gli archivi snapshot presenti sul server SFTP
 #'
@@ -523,7 +722,7 @@ oja_remote_list <- function(config = oja_sftp_config(), region_code = "ITC4") {
   files
 }
 
-# 4. Download di un singolo file --------------------------------------------
+# 5. Download di un singolo file --------------------------------------------
 
 #' Scarica un singolo file via SFTP
 #'
@@ -575,16 +774,61 @@ oja_sftp_download <- function(
   invisible(local_path)
 }
 
-# 5. Sincronizzazione end-to-end --------------------------------------------
+# 6. Tabelle dimensionali globali -------------------------------------------
+
+# I tre file dimensionali serviti da `dim_dir`: CSV non zippati, non
+# region-scoped, ~12 MB complessivi.
+.oja_dim_files <- c(
+  "dim_esco_skills.csv",
+  "dim_occ_cp2021.csv",
+  "dim_occ_esco.csv"
+)
+
+# Sottodirectory locale in cui atterrano i file dimensionali. Tenerli fuori da
+# `local_dir` evita di mischiarli agli archivi mensili ed e' il path che
+# oja_sync() passa a oja_ingest_dirs() come `dim_dir`.
+.oja_dim_local_dir <- function(config) {
+  file.path(config$local_dir, "dim_table")
+}
+
+# Scarica i tre file dimensionali. Non essendo versionati per snapshot
+# vengono riscaricati a ogni sync, senza lo skip-by-size applicato agli
+# archivi mensili: il costo (~12 MB) e' inferiore al rischio di lavorare su
+# dimensioni obsolete.
+.oja_download_dim_tables <- function(config, downloader = oja_sftp_download) {
+  dim_local <- .oja_dim_local_dir(config)
+  if (!dir.exists(dim_local)) {
+    dir.create(dim_local, recursive = TRUE, showWarnings = FALSE)
+  }
+  # `oja_sftp_download()` fa `cd config$remote_dir`: le dimensioni vivono in
+  # `dim_dir`, directory sorella degli archivi regionali.
+  dim_config <- config
+  dim_config$remote_dir <- config$dim_dir %||% ""
+  for (nm in .oja_dim_files) {
+    cli::cli_inform("Download tabella dimensionale {.path {nm}}...")
+    downloader(nm, file.path(dim_local, nm), dim_config)
+  }
+  invisible(dim_local)
+}
+
+# 7. Sincronizzazione end-to-end --------------------------------------------
 
 #' Sincronizza gli snapshot OJA dal server SFTP e li ingerisce
 #'
 #' Scarica nella cartella locale tutti gli snapshot remoti non ancora
 #' presenti (o solo quelli indicati in `snapshots`) e li ingerisce nel DB
-#' DuckDB chiamando [oja_ingest_dirs()]. La funzione e' idempotente: file
-#' locali con stessa dimensione del remoto vengono saltati, snapshot gia'
+#' DuckDB chiamando [oja_ingest_dirs()]. La funzione è idempotente: file
+#' locali con stessa dimensione del remoto vengono saltati, snapshot già
 #' presenti in `dim_snapshot` non vengono reingeriti a meno di
 #' `overwrite = TRUE`.
+#'
+#' Prima degli archivi mensili vengono scaricate le tre tabelle dimensionali
+#' globali (`dim_esco_skills.csv`, `dim_occ_cp2021.csv`,
+#' `dim_occ_esco.csv`) da `config$dim_dir` nella sottodirectory
+#' `dim_table/` di `config$local_dir`, che viene poi passata a
+#' [oja_ingest_dirs()] come `dim_dir`. Non essendo versionate per snapshot
+#' vengono riscaricate a ogni sync, indipendentemente dal fatto che ci siano
+#' snapshot nuovi.
 #'
 #' @param region_code Codice NUTS-2 da scaricare. Default `"ITC4"`.
 #' @param snapshots Vettore opzionale di `snapshot_id` da limitare.
@@ -615,6 +859,8 @@ oja_sync <- function(
   if (!dir.exists(config$local_dir)) {
     dir.create(config$local_dir, recursive = TRUE, showWarnings = FALSE)
   }
+
+  dim_local <- .oja_download_dim_tables(config, downloader = downloader)
 
   cli::cli_inform(
     "Listing remoto su {.url sftp://{config$host}{config$remote_dir}/}..."
@@ -730,6 +976,7 @@ oja_sync <- function(
       zip_dir = config$local_dir,
       snapshots = to_ingest,
       overwrite = overwrite,
+      dim_dir = dim_local,
       path = path
     )
     # Fix 2: guardia esplicita su "snapshot_id" %in% names(summary) come

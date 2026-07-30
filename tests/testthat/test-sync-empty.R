@@ -33,8 +33,24 @@
     user = "u",
     password = "p",
     remote_dir = "/data",
+    dim_dir = "/data_v2/dim_table",
     local_dir = local_dir
   )
+}
+
+# Helper: downloader che soddisfa il download incondizionato dei tre CSV
+# dimensionali ma segnala come errore qualunque richiesta di archivio mensile.
+# Serve nei test in cui gli archivi sono gia' su disco con la dimensione attesa
+# e quindi devono essere saltati per size match.
+.fake_dl_dims_only <- function(remote_name, local_path, config) {
+  if (remote_name %in% .oja_dim_files) {
+    writeBin(raw(10L), local_path)
+    return(invisible(local_path))
+  }
+  stop(sprintf(
+    "il downloader non dovrebbe essere invocato per l'archivio '%s'",
+    remote_name
+  ))
 }
 
 # Frame canonico vuoto che Fix 1 garantisce come ritorno di oja_ingest_dirs()
@@ -59,18 +75,15 @@ test_that("oja_sync non solleva errore quando oja_ingest_dirs ritorna frame vuot
   dir.create(local_dir, recursive = TRUE)
   on.exit(unlink(local_dir, recursive = TRUE), add = TRUE)
 
-  # Crea file locali con stessa dimensione del remoto: il downloader non viene
-  # mai invocato (tutti i file vengono saltati per size match).
+  # Crea file locali con stessa dimensione del remoto: gli archivi mensili
+  # vengono tutti saltati per size match, quindi il downloader viene invocato
+  # soltanto per i tre CSV dimensionali.
   for (sid in c("ITC4_2026_1", "ITC4_2026_2")) {
     sizes <- c(postings = 100, postings_raw = 50, skills = 200)
     for (kind in names(sizes)) {
       fname <- file.path(local_dir, paste0(sid, "_", kind, ".zip"))
       writeBin(raw(sizes[[kind]]), fname)
     }
-  }
-
-  fake_dl <- function(remote_name, local_path, config) {
-    stop("downloader non dovrebbe essere invocato in questo test")
   }
 
   testthat::with_mocked_bindings(
@@ -80,7 +93,7 @@ test_that("oja_sync non solleva errore quando oja_ingest_dirs ritorna frame vuot
         config = .fake_cfg(local_dir),
         path = tempfile(fileext = ".duckdb"),
         lister = .fake_listing_two,
-        downloader = fake_dl,
+        downloader = .fake_dl_dims_only,
         ingest = TRUE
       )
     },
@@ -125,7 +138,7 @@ test_that("oja_sync non solleva errore quando summary ha snapshot_id ma zero rig
           config = .fake_cfg(local_dir),
           path = tempfile(fileext = ".duckdb"),
           lister = .fake_listing_two,
-          downloader = function(...) stop("no download"),
+          downloader = .fake_dl_dims_only,
           ingest = TRUE
         )
       )
@@ -141,8 +154,13 @@ test_that("oja_sync integra correttamente i conteggi quando oja_ingest_dirs ha r
   dir.create(local_dir, recursive = TRUE)
   on.exit(unlink(local_dir, recursive = TRUE), add = TRUE)
 
-  # File mancanti: il downloader li "crea" localmente.
+  # File mancanti: il downloader li "crea" localmente. I CSV dimensionali non
+  # compaiono nel listing degli snapshot e vanno gestiti a parte.
   fake_dl <- function(remote_name, local_path, config) {
+    if (remote_name %in% .oja_dim_files) {
+      writeBin(raw(10L), local_path)
+      return(invisible(local_path))
+    }
     listing <- .fake_listing_two(NULL, NULL)
     sz <- listing$size_bytes[match(remote_name, listing$name)]
     writeBin(raw(sz), local_path)

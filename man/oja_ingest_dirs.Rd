@@ -8,6 +8,7 @@ oja_ingest_dirs(
   zip_dir,
   snapshots = NULL,
   overwrite = FALSE,
+  dim_dir = zip_dir,
   path = oja_db_path()
 )
 }
@@ -18,6 +19,9 @@ oja_ingest_dirs(
 \code{NULL} (default) ingerisce tutti quelli rilevati.}
 
 \item{overwrite}{Logico. Inoltrato a \code{\link[=oja_ingest_snapshot]{oja_ingest_snapshot()}}.}
+
+\item{dim_dir}{Directory che contiene i tre CSV \code{dim_table} globali.
+Default: \code{zip_dir}. Con \code{NULL} la ricarica viene saltata.}
 
 \item{path}{Percorso del file DuckDB. Default: \code{\link[=oja_db_path]{oja_db_path()}}.}
 }
@@ -30,4 +34,9 @@ Scansiona \code{zip_dir} per tutte le triplette \verb{<id>_postings.zip} /
 \verb{<id>_postings_raw.zip} / \verb{<id>_skills.zip} e invoca
 \code{\link[=oja_ingest_snapshot]{oja_ingest_snapshot()}} per ognuna. Gli snapshot gia' presenti nel database
 vengono saltati a meno di \code{overwrite = TRUE}.
+}
+\details{
+Le dimensioni globali del fornitore vengono ricaricate una sola volta prima
+del ciclo: sono identiche per tutti gli snapshot, quindi ripeterne la
+lettura per ogni mese sarebbe lavoro inutile.
 }

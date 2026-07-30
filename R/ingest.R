@@ -85,11 +85,6 @@
     "idworking_hours",
     "idsalary",
     "cp2021_id_level_5",
-    "cp2021_id_level_4",
-    "cp2021_id_level_3",
-    "cp2021_id_level_2",
-    "cp2021_id_level_1",
-    "idesco_level_4",
     "idesco_level_5",
     "general_id"
   )
@@ -176,6 +171,153 @@
   invisible(n)
 }
 
+# Ricarica integrale di una dimensione: DELETE + INSERT dalla staging temp.
+# Usata per le dimensioni globali del fornitore, che sono autoritative: una
+# ricarica evita che restino righe obsolete di consegne precedenti.
+.reload_dim <- function(con, dim_table, dim_data) {
+  staging <- paste0("__stg_", dim_table)
+  duckdb::dbWriteTable(
+    con,
+    staging,
+    dim_data,
+    temporary = TRUE,
+    overwrite = TRUE
+  )
+  cols_csv <- paste(
+    DBI::dbQuoteIdentifier(con, names(dim_data)),
+    collapse = ", "
+  )
+  DBI::dbExecute(
+    con,
+    sprintf("DELETE FROM %s;", DBI::dbQuoteIdentifier(con, dim_table))
+  )
+  n <- DBI::dbExecute(
+    con,
+    sprintf(
+      "INSERT INTO %s (%s) SELECT %s FROM %s;",
+      DBI::dbQuoteIdentifier(con, dim_table),
+      cols_csv,
+      cols_csv,
+      DBI::dbQuoteIdentifier(con, staging)
+    )
+  )
+  DBI::dbExecute(
+    con,
+    sprintf("DROP TABLE %s;", DBI::dbQuoteIdentifier(con, staging))
+  )
+  invisible(n)
+}
+
+# Legge un CSV dim_table del fornitore (delimitatore ';'), rinomina le colonne
+# secondo il DDL e restituisce una data.table deduplicata sulla chiave.
+.read_dim_csv <- function(csv_path, mapping, pk) {
+  dt <- data.table::fread(
+    csv_path,
+    sep = ";",
+    colClasses = "character",
+    showProgress = FALSE
+  )
+  miss <- setdiff(names(mapping), names(dt))
+  if (length(miss)) {
+    cli::cli_abort("Colonne mancanti in {.path {csv_path}}: {.val {miss}}.")
+  }
+  dt <- dt[, names(mapping), with = FALSE]
+  data.table::setnames(dt, unname(mapping))
+  dt <- dt[!is.na(get(pk)) & get(pk) != ""]
+  unique(dt, by = pk)
+}
+
+# Ricarica le tre dimensioni globali (CP2021, occupazioni ESCO, skill ESCO)
+# dai CSV di /data_v2/dim_table scaricati in `dim_dir`.
+.load_global_dims <- function(con, dim_dir) {
+  specs <- list(
+    dim_cp2021 = list(
+      file = "dim_occ_cp2021.csv",
+      pk = "cp2021_id_level_5",
+      mapping = c(
+        cod_5 = "cp2021_id_level_5",
+        descr_5 = "cp2021_level_5",
+        cod_4 = "cp2021_id_level_4",
+        descr_4 = "cp2021_level_4",
+        cod_3 = "cp2021_id_level_3",
+        descr_3 = "cp2021_level_3",
+        cod_2 = "cp2021_id_level_2",
+        descr_2 = "cp2021_level_2",
+        cod_1 = "cp2021_id_level_1",
+        descr_1 = "cp2021_level_1"
+      )
+    ),
+    dim_esco_occupation = list(
+      file = "dim_occ_esco.csv",
+      pk = "idesco_level_5",
+      mapping = c(
+        idlevel_5 = "idesco_level_5",
+        level_5 = "esco_level_5",
+        idlevel_4 = "idesco_level_4",
+        level_4 = "esco_level_4",
+        idlevel_3 = "idesco_level_3",
+        level_3 = "esco_level_3",
+        idlevel_2 = "idesco_level_2",
+        level_2 = "esco_level_2",
+        idlevel_1 = "idesco_level_1",
+        level_1 = "esco_level_1"
+      )
+    ),
+    dim_esco_skill = list(
+      file = "dim_esco_skills.csv",
+      pk = "idescoskill_level_3",
+      mapping = c(
+        skill_id = "idescoskill_level_3",
+        esco_v010200_label = "esco_v010200_label",
+        esco_v010200_uri = "esco_v010200_uri",
+        esco_v010200_obsolete = "esco_v010200_obsolete",
+        esco_v010200_skillstype = "esco_v010200_skillstype",
+        esco_v010200_reusetype = "esco_v010200_reusetype",
+        esco_v010200_description = "esco_v010200_description",
+        esco_v010200_digcomp = "esco_v010200_digcomp",
+        esco_v010200_green = "esco_v010200_green",
+        esco_v010200_hier_code_3 = "esco_v010200_hier_code_3",
+        esco_v010200_hier_uri_3 = "esco_v010200_hier_uri_3",
+        esco_v010200_hier_label_3 = "esco_v010200_hier_label_3",
+        esco_v010200_hier_code_2 = "esco_v010200_hier_code_2",
+        esco_v010200_hier_uri_2 = "esco_v010200_hier_uri_2",
+        esco_v010200_hier_label_2 = "esco_v010200_hier_label_2",
+        esco_v010200_hier_code_1 = "esco_v010200_hier_code_1",
+        esco_v010200_hier_uri_1 = "esco_v010200_hier_uri_1",
+        esco_v010200_hier_label_1 = "esco_v010200_hier_label_1",
+        esco_v010200_hier_uri_0 = "esco_v010200_hier_uri_0",
+        esco_v010200_hier_label_0 = "esco_v010200_hier_label_0",
+        esco_v010200_digital = "esco_v010200_digital",
+        esco_v010200_language = "esco_v010200_language",
+        esco_v010200_transversal = "esco_v010200_transversal",
+        esco_v010200_research = "esco_v010200_research"
+      )
+    )
+  )
+
+  paths <- vapply(specs, function(s) file.path(dim_dir, s$file), character(1))
+  missing <- !file.exists(paths)
+  if (any(missing)) {
+    cli::cli_abort(c(
+      "File {.path dim_table} mancanti in {.path {dim_dir}}.",
+      "x" = "Non trovati: {.path {paths[missing]}}",
+      "i" = "Usa {.code dim_dir = NULL} per saltare la ricarica delle dimensioni globali."
+    ))
+  }
+
+  counts <- integer(length(specs))
+  names(counts) <- names(specs)
+  for (tbl in names(specs)) {
+    spec <- specs[[tbl]]
+    dt <- .read_dim_csv(paths[[tbl]], spec$mapping, spec$pk)
+    .reload_dim(con, tbl, dt)
+    n <- nrow(dt)
+    cli::cli_inform("Dimensione globale {.field {tbl}} ricaricata: {n} righe.")
+    counts[[tbl]] <- n
+  }
+  invisible(counts)
+}
+
 # Estrae le dimensioni puramente dipendenti dalle postings.
 .build_postings_dims <- function(postings) {
   d_geo <- unique(postings[, .(
@@ -217,31 +359,6 @@
     .(idworking_hours, working_hours)
   ])
   d_salary <- unique(postings[!is.na(idsalary), .(idsalary, salary)])
-  d_cp <- unique(postings[
-    !is.na(cp2021_id_level_5) & cp2021_id_level_5 != "",
-    .(
-      cp2021_id_level_5,
-      cp2021_level_5,
-      cp2021_id_level_4,
-      cp2021_level_4,
-      cp2021_id_level_3,
-      cp2021_level_3,
-      cp2021_id_level_2,
-      cp2021_level_2,
-      cp2021_id_level_1,
-      cp2021_level_1
-    )
-  ])
-  d_esco <- unique(postings[
-    !is.na(idesco_level_5) & idesco_level_5 != "",
-    .(
-      idesco_level_5,
-      esco_level_5,
-      idesco_level_4,
-      esco_level_4,
-      uri
-    )
-  ])
   d_source <- unique(postings[
     !is.na(source) & source != "",
     .(
@@ -259,8 +376,6 @@
     dim_experience = d_experience,
     dim_working_hours = d_hours,
     dim_salary = d_salary,
-    dim_cp2021 = d_cp,
-    dim_esco_occupation = d_esco,
     dim_source = d_source
   )
 }
@@ -275,13 +390,13 @@
     dim_experience = "idexperience",
     dim_working_hours = "idworking_hours",
     dim_salary = "idsalary",
-    dim_cp2021 = "cp2021_id_level_5",
-    dim_esco_occupation = "idesco_level_5",
     dim_source = "source"
   )
 }
 
-# Stream dello skills CSV: alimenta dim_esco_skill (aggregato) + fact_skills.
+# Stream dello skills CSV in fact_skills. La CSV sorgente porta soltanto
+# (general_id, date, IDESCOSKILL_LEVEL_3): le proprieta' delle skill arrivano
+# da dim_esco_skill, ricaricata da .load_global_dims().
 .stream_skills <- function(con, skills_zip, snapshot_id) {
   csv_path <- .unzip_to_temp(skills_zip)
   on.exit(unlink(dirname(csv_path), recursive = TRUE), add = TRUE)
@@ -292,37 +407,7 @@
     csv_lit
   )
 
-  # 1. dim_esco_skill: prima occorrenza per IDESCOSKILL_LEVEL_3
-  ddl_skill_cols <- DBI::dbGetQuery(
-    con,
-    "PRAGMA table_info('dim_esco_skill')"
-  )$name
-  skill_col_pairs <- vapply(
-    ddl_skill_cols,
-    function(c) {
-      if (c == "idescoskill_level_3") {
-        "idescoskill_level_3"
-      } else {
-        sprintf("any_value(%s) AS %s", c, c)
-      }
-    },
-    character(1)
-  )
-  skill_select <- paste(skill_col_pairs, collapse = ",\n  ")
-  sql_dim <- sprintf(
-    "INSERT INTO dim_esco_skill (%s)
-     SELECT %s
-       FROM %s
-      WHERE idescoskill_level_3 IS NOT NULL AND idescoskill_level_3 <> ''
-      GROUP BY idescoskill_level_3
-     ON CONFLICT (idescoskill_level_3) DO NOTHING;",
-    paste(ddl_skill_cols, collapse = ", "),
-    skill_select,
-    read_csv
-  )
-  DBI::dbExecute(con, sql_dim)
-
-  # 2. fact_skills - general_id come VARCHAR per coerenza con fact_postings
+  # general_id come VARCHAR per coerenza con fact_postings
   sql_fact <- sprintf(
     "INSERT INTO fact_skills (snapshot_id, general_id, idescoskill_level_3)
      SELECT DISTINCT ?, CAST(general_id AS VARCHAR), idescoskill_level_3
@@ -376,17 +461,34 @@
 #' `<snapshot_id>_postings_raw.zip`, `<snapshot_id>_skills.zip`) presenti in
 #' `zip_dir`, deduplica i posting su `general_id` mantenendo la riga con
 #' `(year, month, day)_grab_date` piu' recente, costruisce le dimensioni
-#' (UPSERT), alimenta `fact_postings` e — via DuckDB `read_csv_auto` — anche
-#' `fact_skills` e `dim_esco_skill` senza materializzare la tabella delle skill
-#' (~27M righe) in R. L'intera operazione e' avvolta in una singola
+#' derivate dalle postings (UPSERT), alimenta `fact_postings` e — via DuckDB
+#' `read_csv_auto` — anche `fact_skills` senza materializzare la tabella delle
+#' skill (~27M righe) in R. L'intera operazione e' avvolta in una singola
 #' transazione con validazione di unicita' e integrita' referenziale prima
 #' del COMMIT.
+#'
+#' @details
+#' Le dimensioni globali del fornitore (`dim_cp2021`, `dim_esco_occupation`,
+#' `dim_esco_skill`) non sono derivabili dagli archivi dello snapshot: le
+#' postings portano soltanto le chiavi esterne `cp2021_id_level_5` e
+#' `idesco_level_5`, la tabella delle skill soltanto `idescoskill_level_3`.
+#' Vengono quindi ricaricate integralmente dai tre CSV globali presenti in
+#' `dim_dir` (`dim_occ_cp2021.csv`, `dim_occ_esco.csv`,
+#' `dim_esco_skills.csv`, delimitatore `;`).
+#'
+#' Il valore `"Unclassifiable"` puo' comparire in `idesco_level_5` come
+#' sentinella: non corrisponde a nessuna chiave di `dim_esco_occupation` e i
+#' join in lettura restituiscono `NA` per le descrizioni.
 #'
 #' @param zip_dir Directory che contiene i tre archivi.
 #' @param snapshot_id Identificativo dello snapshot, es. `"ITC4_2026_2"`.
 #' @param overwrite Logico. Se `TRUE`, rimuove l'eventuale snapshot omonimo
 #'   gia' presente prima di reinserirlo. Default `FALSE` (errore se gia'
 #'   ingerito).
+#' @param dim_dir Directory che contiene i tre CSV `dim_table` globali.
+#'   Default: `zip_dir`. Con `NULL` la ricarica delle dimensioni globali viene
+#'   saltata (utile quando il chiamante l'ha gia' eseguita, come fa
+#'   [oja_ingest_dirs()]).
 #' @param path Percorso del file DuckDB. Default: [oja_db_path()].
 #' @param con Connessione DuckDB in scrittura, opzionale. Quando fornita la
 #'   funzione non apre/chiude connessioni.
@@ -406,6 +508,7 @@ oja_ingest_snapshot <- function(
   zip_dir,
   snapshot_id,
   overwrite = FALSE,
+  dim_dir = zip_dir,
   path = oja_db_path(),
   con = NULL
 ) {
@@ -503,6 +606,10 @@ oja_ingest_snapshot <- function(
     add = TRUE
   )
 
+  if (!is.null(dim_dir)) {
+    .load_global_dims(con, dim_dir)
+  }
+
   cli::cli_inform("Costruzione e UPSERT delle dimensioni...")
   dims <- .build_postings_dims(postings)
   pk_map <- .dim_pk()
@@ -582,10 +689,16 @@ oja_ingest_snapshot <- function(
 #' [oja_ingest_snapshot()] per ognuna. Gli snapshot gia' presenti nel database
 #' vengono saltati a meno di `overwrite = TRUE`.
 #'
+#' Le dimensioni globali del fornitore vengono ricaricate una sola volta prima
+#' del ciclo: sono identiche per tutti gli snapshot, quindi ripeterne la
+#' lettura per ogni mese sarebbe lavoro inutile.
+#'
 #' @param zip_dir Directory contenente gli archivi.
 #' @param snapshots Vettore opzionale di `snapshot_id` da ingerire. Se
 #'   `NULL` (default) ingerisce tutti quelli rilevati.
 #' @param overwrite Logico. Inoltrato a [oja_ingest_snapshot()].
+#' @param dim_dir Directory che contiene i tre CSV `dim_table` globali.
+#'   Default: `zip_dir`. Con `NULL` la ricarica viene saltata.
 #' @param path Percorso del file DuckDB. Default: [oja_db_path()].
 #'
 #' @return Invisibilmente una `data.frame` con un riepilogo per ogni snapshot
@@ -595,6 +708,7 @@ oja_ingest_dirs <- function(
   zip_dir,
   snapshots = NULL,
   overwrite = FALSE,
+  dim_dir = zip_dir,
   path = oja_db_path()
 ) {
   zips <- list.files(zip_dir, pattern = "_postings\\.zip$", full.names = FALSE)
@@ -626,12 +740,17 @@ oja_ingest_dirs <- function(
   on.exit(oja_disconnect(con), add = TRUE)
   oja_init_db(con = con)
 
+  if (!is.null(dim_dir)) {
+    .load_global_dims(con, dim_dir)
+  }
+
   rows <- lapply(ids, function(id) {
     res <- tryCatch(
       oja_ingest_snapshot(
         zip_dir = zip_dir,
         snapshot_id = id,
         overwrite = overwrite,
+        dim_dir = NULL,
         con = con
       ),
       error = function(e) {

@@ -26,15 +26,34 @@ snapshot disponibili (\code{dim_snapshot.year} / \code{month}).}
 \item{verbose}{Logico. Stampa il numero di righe per tabella.}
 }
 \value{
-Una \code{list(postings, skills, companies)} di \code{data.table}.
+Una \code{list(postings, skills, companies)} di \code{data.table}. Le
+\code{skills} contengono \code{general_id}, \code{year_grab_date}, \code{month_grab_date},
+\code{IDESCOSKILL_LEVEL_3}, gli otto attributi ESCO elencati nei dettagli e
+\code{snapshot_id}.
 }
 \description{
 Ricostruisce dal database DuckDB la lista a tre elementi (\code{postings},
 \code{skills}, \code{companies}) attesa dai consumatori a valle. Le \code{postings}
-tornano "larghe" con tutte le colonne sorgente; le \code{skills} riportano
-i nomi originali in maiuscolo come nella CSV Lightcast; le \code{companies}
-riproducono la coppia \code{general_id}/\code{companyname}. Le tre tabelle hanno
-chiave su \code{general_id}.
+tornano "larghe", con le gerarchie CP2021 ed ESCO ricomposte via join sulle
+dimensioni; le \code{skills} riportano i nomi in maiuscolo della CSV Lightcast
+storica; le \code{companies} riproducono la coppia \code{general_id}/\code{companyname}.
+Le tre tabelle hanno chiave su \code{general_id}.
+}
+\details{
+La tabella \code{skills} espone meno colonne della CSV Lightcast storica. La
+consegna \code{data_v2} del fornitore riduce il file delle skill alla sola
+chiave \code{IDESCOSKILL_LEVEL_3} e la dimensione globale
+\code{dim_esco_skills.csv} non contiene piu' i flag \code{PILLAR_SOFTSKILLS},
+\code{PILLAR_DIGITALSKILLS}, \code{PILLAR_BIGDATA}, \code{ESCO_V0101_ICT},
+\code{ESCO_V0101_DIGCOMP}, \code{ESCO_V0101_TRANSVERSAL}, la gerarchia
+\verb{ESCO_V0101_HIER_*} e i livelli \verb{ONET_HIER_LEVEL_*}. Queste colonne non
+vengono restituite. Restano disponibili \code{ESCOSKILL_LEVEL_3},
+\code{ESCO_V0101_OBSOLETE}, \code{ESCO_v0101_DESCRIPTION}, \code{ESCO_V0101_URI},
+\code{ESCO_V0101_SKILLSTYPE}, \code{ESCO_V0101_REUSETYPE}, \code{ESCO_V0101_GREEN} e
+\code{ESCO_V0101_LANGUAGE}.
+
+Per le \code{postings} la colonna \code{uri} dell'occupazione ESCO non e' piu'
+presente nella sorgente e non viene esposta.
 }
 \examples{
 \dontrun{

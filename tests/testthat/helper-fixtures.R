@@ -1,6 +1,153 @@
 # Generatore di fixture sintetiche minime per i test di ingestione.
-# Produce in tempdir() i tre archivi zip nello schema atteso da
-# oja_ingest_snapshot().
+# Riproduce la consegna `data_v2` del fornitore: i tre archivi zip dello
+# snapshot (postings ridotte alle sole chiavi esterne, skills ridotte alla
+# sola chiave della skill) piu' i tre CSV `dim_table` globali che portano le
+# gerarchie CP2021, ESCO occupazioni ed ESCO skill.
+
+# 1. Universi dei codici condivisi tra fatti e dimensioni ---------------------
+
+# Le dimensioni globali sono costruite da questi vettori, non dai valori
+# campionati: garantisce che ogni chiave esterna presente nei fatti trovi
+# corrispondenza in dimensione, quindi che i join di oja_normalised()
+# restituiscano descrizioni non NA.
+.fx_cp2021_codes <- c("8.1.3.2.0", "2.5.1.1.0", "3.1.1.2.0")
+.fx_esco_codes <- c("9333.8", "2411.1")
+
+# Gerarchia CP2021 (ISTAT): un livello per componente del codice puntato.
+.fx_dim_cp2021 <- function() {
+  data.table::data.table(
+    cod_5 = .fx_cp2021_codes,
+    cod_4 = c("8.1.3.2", "2.5.1.1", "3.1.1.2"),
+    cod_3 = c("8.1.3", "2.5.1", "3.1.1"),
+    cod_2 = c("8.1", "2.5", "3.1"),
+    cod_1 = c("8", "2", "3"),
+    descr_5 = c(
+      "Personale non qualificato addetto alla pulizia di veicoli",
+      "Specialisti in contabilità",
+      "Tecnici informatici"
+    ),
+    descr_4 = c(
+      "Personale non qualificato addetto alla pulizia di veicoli",
+      "Specialisti in contabilità",
+      "Tecnici informatici"
+    ),
+    descr_3 = c(
+      "Personale non qualificato nei servizi di pulizia",
+      "Specialisti in scienze gestionali, commerciali e bancarie",
+      "Tecnici delle scienze quantitative, fisiche e chimiche"
+    ),
+    descr_2 = c(
+      "Professioni non qualificate nelle attività gestionali e nei servizi",
+      "Specialisti in scienze umane, sociali, artistiche e gestionali",
+      "Professioni tecniche in campo scientifico e ingegneristico"
+    ),
+    descr_1 = c(
+      "Professioni non qualificate",
+      "Professioni intellettuali, scientifiche e di elevata specializzazione",
+      "Professioni tecniche"
+    )
+  )
+}
+
+# Gerarchia ESCO delle occupazioni (ISCO-08): i livelli 1-4 sono prefissi del
+# codice a quattro cifre, il livello 5 aggiunge il suffisso ESCO.
+.fx_dim_esco_occupation <- function() {
+  data.table::data.table(
+    idlevel_5 = .fx_esco_codes,
+    idlevel_4 = c("9333", "2411"),
+    idlevel_3 = c("933", "241"),
+    idlevel_2 = c("93", "24"),
+    idlevel_1 = c("9", "2"),
+    level_5 = c("addetto al carico e scarico merci", "contabile"),
+    level_4 = c(
+      "Facchini e addetti alla movimentazione merci",
+      "Contabili"
+    ),
+    level_3 = c(
+      "Manodopera per il trasporto e il magazzinaggio",
+      "Specialisti in finanza e contabilità"
+    ),
+    level_2 = c(
+      "Manodopera nelle costruzioni, nell'industria e nei trasporti",
+      "Specialisti in scienze gestionali e commerciali"
+    ),
+    level_1 = c(
+      "Professioni non qualificate",
+      "Professioni intellettuali e scientifiche"
+    )
+  )
+}
+
+# Dimensione globale delle skill ESCO. Costruita da `skill_codes` perche' il
+# numero di skill per posting e' parametrico. I quattro rami della gerarchia
+# ESCO (S=skill, K=knowledge, T=transversal, L=language) vengono alternati per
+# dare varieta' ai flag esposti dallo shim.
+.fx_dim_esco_skills <- function(skill_codes) {
+  n <- length(skill_codes)
+  branch <- rep(c("S", "K", "T", "L"), length.out = n)
+  code_1 <- sprintf("%s%d", branch, seq_len(n))
+  code_2 <- sprintf("%s.%d", code_1, 1L)
+  code_3 <- sprintf("%s.%d", code_2, 2L)
+  data.table::data.table(
+    skill_id = skill_codes,
+    esco_v010200_label = sprintf("competenza %s", skill_codes),
+    esco_v010200_uri = sprintf(
+      "http://data.europa.eu/esco/skill/%s",
+      skill_codes
+    ),
+    esco_v010200_obsolete = "N",
+    esco_v010200_skillstype = ifelse(
+      branch == "K",
+      "knowledge",
+      "skill/competence"
+    ),
+    esco_v010200_reusetype = data.table::fcase(
+      branch == "T" , "transversal"     ,
+      branch == "K" , "sector-specific" ,
+      default = "cross-sector"
+    ),
+    esco_v010200_description = sprintf(
+      "Descrizione sintetica della competenza %s.",
+      skill_codes
+    ),
+    esco_v010200_digcomp = ifelse(branch == "K", "Y", "N"),
+    esco_v010200_green = ifelse(seq_len(n) %% 2L == 0L, "Y", "N"),
+    esco_v010200_hier_code_3 = code_3,
+    esco_v010200_hier_uri_3 = sprintf(
+      "http://data.europa.eu/esco/skill/%s",
+      code_3
+    ),
+    esco_v010200_hier_label_3 = sprintf("gerarchia livello 3 %s", code_3),
+    esco_v010200_hier_code_2 = code_2,
+    esco_v010200_hier_uri_2 = sprintf(
+      "http://data.europa.eu/esco/skill/%s",
+      code_2
+    ),
+    esco_v010200_hier_label_2 = sprintf("gerarchia livello 2 %s", code_2),
+    esco_v010200_hier_code_1 = code_1,
+    esco_v010200_hier_uri_1 = sprintf(
+      "http://data.europa.eu/esco/skill/%s",
+      code_1
+    ),
+    esco_v010200_hier_label_1 = sprintf("gerarchia livello 1 %s", code_1),
+    esco_v010200_hier_uri_0 = sprintf(
+      "http://data.europa.eu/esco/skill/%s",
+      branch
+    ),
+    esco_v010200_hier_label_0 = data.table::fcase(
+      branch == "S" , "abilità e competenze"  ,
+      branch == "K" , "conoscenze"             ,
+      branch == "T" , "competenze trasversali" ,
+      default = "lingue"
+    ),
+    esco_v010200_digital = ifelse(branch == "K", "Y", "N"),
+    esco_v010200_language = ifelse(branch == "L", "Y", "N"),
+    esco_v010200_transversal = ifelse(branch == "T", "Y", "N"),
+    esco_v010200_research = "N"
+  )
+}
+
+# 2. Costruzione delle fixture ------------------------------------------------
 
 build_fixtures <- function(
   zip_dir = tempfile("itaposts_fix_"),
@@ -15,6 +162,10 @@ build_fixtures <- function(
   set.seed(42)
 
   ids <- seq_len(n_postings) + 100000L
+  skill_codes <- sprintf("ESCOv1_%d", seq_len(n_skills_per))
+
+  # Header della consegna data_v2: solo chiavi esterne per CP2021 ed ESCO, le
+  # descrizioni arrivano dalle dimensioni globali.
   postings <- data.table::data.table(
     general_id = ids,
     year_grab_date = 2026L,
@@ -50,39 +201,11 @@ build_fixtures <- function(
     idsalary = NA_integer_,
     salary = NA_character_,
     salaryvalue = stats::runif(n_postings, 1500, 3500),
-    cp2021_id_level_5 = sprintf(
-      "%s.0",
-      sample(c("8.1.3.2", "2.5.1.1", "3.1.1.2"), n_postings, replace = TRUE)
-    ),
-    cp2021_id_level_4 = sample(
-      c("8.1.3.2", "2.5.1.1", "3.1.1.2"),
-      n_postings,
-      replace = TRUE
-    ),
-    cp2021_id_level_3 = sample(
-      c("8.1.3", "2.5.1", "3.1.1"),
-      n_postings,
-      replace = TRUE
-    ),
-    cp2021_id_level_2 = sample(
-      c("8.1", "2.5", "3.1"),
-      n_postings,
-      replace = TRUE
-    ),
-    cp2021_id_level_1 = sample(c("8", "2", "3"), n_postings, replace = TRUE),
-    cp2021_level_5 = "L5",
-    cp2021_level_4 = "L4",
-    cp2021_level_3 = "L3",
-    cp2021_level_2 = "L2",
-    cp2021_level_1 = "L1",
+    cp2021_id_level_5 = sample(.fx_cp2021_codes, n_postings, replace = TRUE),
     source = sample(c("IT_RANDSTAD", "IT_INDEED"), n_postings, replace = TRUE),
     source_category_analysis = "agency",
     source_relevance = "high",
-    idesco_level_4 = sample(c("9333", "1234"), n_postings, replace = TRUE),
-    idesco_level_5 = sample(c("9333.8", "1234.5"), n_postings, replace = TRUE),
-    uri = "http://data.europa.eu/esco/occupation/test",
-    esco_level_5 = "warehouse worker",
-    esco_level_4 = "Freight handlers"
+    idesco_level_5 = sample(.fx_esco_codes, n_postings, replace = TRUE)
   )
 
   if (isTRUE(include_duplicates)) {
@@ -101,53 +224,18 @@ build_fixtures <- function(
     )
   )
 
+  # La CSV delle skill in data_v2 porta soltanto la chiave della skill.
   skills <- data.table::CJ(
     general_id = ids,
-    IDESCOSKILL_LEVEL_3 = sprintf("ESCOv1_%d", seq_len(n_skills_per))
+    IDESCOSKILL_LEVEL_3 = skill_codes
   )
-  skills[, `:=`(
-    ESCOSKILL_LEVEL_3 = paste("skill", IDESCOSKILL_LEVEL_3),
-    ESCO_V0101_OBSOLETE = "N",
-    ESCO_v0101_DESCRIPTION = "lorem ipsum",
-    ONET_HIER_LEVEL_1 = "Work Styles",
-    ONET_HIER_LEVEL_2 = "Conscientiousness",
-    ONET_HIER_LEVEL_3 = "Dependability",
-    PILLAR_SOFTSKILLS = "",
-    PILLAR_DIGITALSKILLS = "",
-    PILLAR_BIGDATA = "",
-    ESCO_V0101_URI = "http://data.europa.eu/esco/skill/test",
-    ESCO_V0101_SKILLSTYPE = "skill/competence",
-    ESCO_V0101_REUSETYPE = "cross-sector",
-    ESCO_V0101_DIGCOMP = "N",
-    ESCO_V0101_GREEN = sample(c("Y", "N"), .N, replace = TRUE),
-    ESCO_V0101_ICT = "N",
-    ESCO_V0101_LANGUAGE = "N",
-    ESCO_V0101_TRANSVERSAL = "",
-    ESCO_V0101_HIER_CODE_3 = "S3.3.3",
-    ESCO_V0101_HIER_URI_3 = "http://x/3",
-    ESCO_V0101_HIER_LABEL_3 = "lvl3",
-    ESCO_V0101_HIER_CODE_2 = "S3.3",
-    ESCO_V0101_HIER_URI_2 = "http://x/2",
-    ESCO_V0101_HIER_LABEL_2 = "lvl2",
-    ESCO_V0101_HIER_CODE_1 = "S3",
-    ESCO_V0101_HIER_URI_1 = "http://x/1",
-    ESCO_V0101_HIER_LABEL_1 = "lvl1",
-    ESCO_V0101_HIER_CODE_0 = "S",
-    ESCO_V0101_HIER_URI_0 = "http://x/0",
-    ESCO_V0101_HIER_LABEL_0 = "abilita"
-  )]
-  skills[, year_grab_date := 2026L]
-  skills[, month_grab_date := 1L]
+  skills[, `:=`(year_grab_date = 2026L, month_grab_date = 1L)]
   data.table::setcolorder(
     skills,
-    c(
-      "general_id",
-      "year_grab_date",
-      "month_grab_date",
-      "IDESCOSKILL_LEVEL_3",
-      "ESCOSKILL_LEVEL_3"
-    )
+    c("general_id", "year_grab_date", "month_grab_date", "IDESCOSKILL_LEVEL_3")
   )
+
+  # 3. Scrittura degli archivi e dei dim_table -------------------------------
 
   csv_dir <- tempfile("itaposts_csv_")
   dir.create(csv_dir)
@@ -159,6 +247,25 @@ build_fixtures <- function(
   data.table::fwrite(postings, p_csv)
   data.table::fwrite(postings_raw, pr_csv)
   data.table::fwrite(skills, s_csv)
+
+  # I dim_table finiscono in `zip_dir`: e' il default di `dim_dir` in
+  # oja_ingest_snapshot() e oja_ingest_dirs().
+  dim_files <- c(
+    dim_occ_cp2021 = file.path(zip_dir, "dim_occ_cp2021.csv"),
+    dim_occ_esco = file.path(zip_dir, "dim_occ_esco.csv"),
+    dim_esco_skills = file.path(zip_dir, "dim_esco_skills.csv")
+  )
+  data.table::fwrite(.fx_dim_cp2021(), dim_files[["dim_occ_cp2021"]], sep = ";")
+  data.table::fwrite(
+    .fx_dim_esco_occupation(),
+    dim_files[["dim_occ_esco"]],
+    sep = ";"
+  )
+  data.table::fwrite(
+    .fx_dim_esco_skills(skill_codes),
+    dim_files[["dim_esco_skills"]],
+    sep = ";"
+  )
 
   zip_one <- function(csv_file) {
     zip_path <- file.path(zip_dir, sub("\\.csv$", ".zip", basename(csv_file)))
@@ -172,6 +279,8 @@ build_fixtures <- function(
     snapshot_id = snapshot_id,
     n_postings_unique = n_postings,
     n_skills_total = nrow(skills),
+    skill_codes = skill_codes,
+    dim_files = dim_files,
     postings = zip_one(p_csv),
     postings_raw = zip_one(pr_csv),
     skills = zip_one(s_csv)

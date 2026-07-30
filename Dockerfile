@@ -1,13 +1,12 @@
 FROM rocker/r2u:noble
 
 # 1. System tools ------------------------------------------------------------
-# openssh-client: client `sftp` invocato via processx dal backend.
-# sshpass: helper per passare la password a sftp via env (mai su argv).
+# openssh-client: client `sftp` invocato via processx dal backend. L'auth a
+#   password passa per un pty gestito da processx: nessun helper esterno.
 # procps: `ps` usato dal lock file per stale-PID detection.
 # tzdata: fuso orario Europe/Rome per i timestamp dei log.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       openssh-client \
-      sshpass \
       ca-certificates \
       procps \
       tzdata \

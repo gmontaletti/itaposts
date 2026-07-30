@@ -8,6 +8,7 @@ oja_ingest_snapshot(
   zip_dir,
   snapshot_id,
   overwrite = FALSE,
+  dim_dir = zip_dir,
   path = oja_db_path(),
   con = NULL
 )
@@ -20,6 +21,11 @@ oja_ingest_snapshot(
 \item{overwrite}{Logico. Se \code{TRUE}, rimuove l'eventuale snapshot omonimo
 gia' presente prima di reinserirlo. Default \code{FALSE} (errore se gia'
 ingerito).}
+
+\item{dim_dir}{Directory che contiene i tre CSV \code{dim_table} globali.
+Default: \code{zip_dir}. Con \code{NULL} la ricarica delle dimensioni globali viene
+saltata (utile quando il chiamante l'ha gia' eseguita, come fa
+\code{\link[=oja_ingest_dirs]{oja_ingest_dirs()}}).}
 
 \item{path}{Percorso del file DuckDB. Default: \code{\link[=oja_db_path]{oja_db_path()}}.}
 
@@ -35,11 +41,24 @@ Legge i tre archivi zip Lightcast (\verb{<snapshot_id>_postings.zip},
 \verb{<snapshot_id>_postings_raw.zip}, \verb{<snapshot_id>_skills.zip}) presenti in
 \code{zip_dir}, deduplica i posting su \code{general_id} mantenendo la riga con
 \verb{(year, month, day)_grab_date} piu' recente, costruisce le dimensioni
-(UPSERT), alimenta \code{fact_postings} e — via DuckDB \code{read_csv_auto} — anche
-\code{fact_skills} e \code{dim_esco_skill} senza materializzare la tabella delle skill
-(~27M righe) in R. L'intera operazione e' avvolta in una singola
+derivate dalle postings (UPSERT), alimenta \code{fact_postings} e — via DuckDB
+\code{read_csv_auto} — anche \code{fact_skills} senza materializzare la tabella delle
+skill (~27M righe) in R. L'intera operazione e' avvolta in una singola
 transazione con validazione di unicita' e integrita' referenziale prima
 del COMMIT.
+}
+\details{
+Le dimensioni globali del fornitore (\code{dim_cp2021}, \code{dim_esco_occupation},
+\code{dim_esco_skill}) non sono derivabili dagli archivi dello snapshot: le
+postings portano soltanto le chiavi esterne \code{cp2021_id_level_5} e
+\code{idesco_level_5}, la tabella delle skill soltanto \code{idescoskill_level_3}.
+Vengono quindi ricaricate integralmente dai tre CSV globali presenti in
+\code{dim_dir} (\code{dim_occ_cp2021.csv}, \code{dim_occ_esco.csv},
+\code{dim_esco_skills.csv}, delimitatore \verb{;}).
+
+Il valore \code{"Unclassifiable"} puo' comparire in \code{idesco_level_5} come
+sentinella: non corrisponde a nessuna chiave di \code{dim_esco_occupation} e i
+join in lettura restituiscono \code{NA} per le descrizioni.
 }
 \examples{
 \dontrun{

@@ -89,14 +89,21 @@ test_that("le dimensioni sono popolate e univoche", {
   con <- oja_connect(db)
   on.exit(oja_disconnect(con), add = TRUE)
 
+  # Dimensioni derivate dalle postings (UPSERT incrementale).
   expect_gt(
     DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM dim_geography")$n,
     0
   )
-  expect_gt(
-    DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM dim_esco_skill")$n,
-    0
-  )
+  # Dimensioni globali ricaricate dai CSV dim_table.
+  for (tbl in c("dim_cp2021", "dim_esco_occupation", "dim_esco_skill")) {
+    expect_gt(
+      DBI::dbGetQuery(
+        con,
+        sprintf("SELECT COUNT(*) AS n FROM %s", tbl)
+      )$n,
+      0
+    )
+  }
   # Univocita' su PK
   expect_equal(
     DBI::dbGetQuery(
@@ -105,6 +112,53 @@ test_that("le dimensioni sono popolate e univoche", {
     ) |>
       (\(x) x$n - x$d)(),
     0
+  )
+  # Ogni chiave esterna dei fatti deve trovare corrispondenza in dimensione.
+  orphan_fk <- DBI::dbGetQuery(
+    con,
+    "SELECT
+       (SELECT COUNT(*) FROM fact_postings f
+         WHERE NOT EXISTS (SELECT 1 FROM dim_cp2021 d
+                            WHERE d.cp2021_id_level_5 = f.cp2021_id_level_5)) AS cp,
+       (SELECT COUNT(*) FROM fact_postings f
+         WHERE NOT EXISTS (SELECT 1 FROM dim_esco_occupation d
+                            WHERE d.idesco_level_5 = f.idesco_level_5)) AS occ,
+       (SELECT COUNT(*) FROM fact_skills s
+         WHERE NOT EXISTS (SELECT 1 FROM dim_esco_skill d
+                            WHERE d.idescoskill_level_3 = s.idescoskill_level_3)) AS skl"
+  )
+  expect_equal(orphan_fk$cp, 0L)
+  expect_equal(orphan_fk$occ, 0L)
+  expect_equal(orphan_fk$skl, 0L)
+})
+
+test_that("i CSV dim_table sono obbligatori quando dim_dir non e' NULL", {
+  fx <- build_fixtures()
+  on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+  db <- tempfile(fileext = ".duckdb")
+  on.exit(unlink(c(db, paste0(db, ".wal"))), add = TRUE)
+
+  unlink(fx$dim_files[["dim_occ_esco"]])
+
+  expect_error(
+    oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = db),
+    regexp = "dim_table"
+  )
+
+  # Con dim_dir = NULL l'ingest procede: le dimensioni globali restano vuote.
+  res <- oja_ingest_snapshot(
+    fx$zip_dir,
+    fx$snapshot_id,
+    path = db,
+    dim_dir = NULL
+  )
+  expect_equal(res$n_postings, fx$n_postings_unique)
+
+  con <- oja_connect(db)
+  on.exit(oja_disconnect(con), add = TRUE)
+  expect_equal(
+    DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM dim_esco_occupation")$n,
+    0L
   )
 })
 

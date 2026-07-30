@@ -37,10 +37,19 @@ Invisibilmente un \code{data.frame} con \code{snapshot_id}, \code{downloaded},
 \description{
 Scarica nella cartella locale tutti gli snapshot remoti non ancora
 presenti (o solo quelli indicati in \code{snapshots}) e li ingerisce nel DB
-DuckDB chiamando \code{\link[=oja_ingest_dirs]{oja_ingest_dirs()}}. La funzione e' idempotente: file
-locali con stessa dimensione del remoto vengono saltati, snapshot gia'
+DuckDB chiamando \code{\link[=oja_ingest_dirs]{oja_ingest_dirs()}}. La funzione è idempotente: file
+locali con stessa dimensione del remoto vengono saltati, snapshot già
 presenti in \code{dim_snapshot} non vengono reingeriti a meno di
 \code{overwrite = TRUE}.
+}
+\details{
+Prima degli archivi mensili vengono scaricate le tre tabelle dimensionali
+globali (\code{dim_esco_skills.csv}, \code{dim_occ_cp2021.csv},
+\code{dim_occ_esco.csv}) da \code{config$dim_dir} nella sottodirectory
+\verb{dim_table/} di \code{config$local_dir}, che viene poi passata a
+\code{\link[=oja_ingest_dirs]{oja_ingest_dirs()}} come \code{dim_dir}. Non essendo versionate per snapshot
+vengono riscaricate a ogni sync, indipendentemente dal fatto che ci siano
+snapshot nuovi.
 }
 \examples{
 \dontrun{

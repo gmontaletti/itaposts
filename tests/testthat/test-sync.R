@@ -11,6 +11,14 @@ make_remote_listing <- function(snapshot_ids, region = "ITC4") {
   do.call(rbind, rows)
 }
 
+# I tre CSV dimensionali vengono scaricati a ogni sync, senza skip-by-size e
+# indipendentemente dagli snapshot presenti: i downloader finti devono
+# gestirli, altrimenti mascherano le asserzioni sugli archivi mensili.
+.write_dummy_dim <- function(local_path) {
+  writeBin(raw(10L), local_path)
+  invisible(local_path)
+}
+
 test_that("oja_sync ignora snapshot incompleti sul remoto", {
   cfg <- list(
     host = "h",
@@ -18,6 +26,7 @@ test_that("oja_sync ignora snapshot incompleti sul remoto", {
     user = "u",
     password = "p",
     remote_dir = "/x",
+    dim_dir = "/data_v2/dim_table",
     local_dir = tempfile("itaposts_sync_")
   )
   fake_lister <- function(config, region_code) {
@@ -49,6 +58,7 @@ test_that("oja_sync scarica solo i file mancanti e salta i duplicati per dimensi
     user = "u",
     password = "p",
     remote_dir = "/x",
+    dim_dir = "/data_v2/dim_table",
     local_dir = tempfile("itaposts_sync_")
   )
   dir.create(cfg$local_dir, recursive = TRUE)
@@ -64,6 +74,9 @@ test_that("oja_sync scarica solo i file mancanti e salta i duplicati per dimensi
   downloaded <- character()
   fake_dl <- function(remote_name, local_path, config) {
     downloaded <<- c(downloaded, remote_name)
+    if (remote_name %in% .oja_dim_files) {
+      return(.write_dummy_dim(local_path))
+    }
     sz <- listing$size_bytes[match(remote_name, listing$name)]
     writeBin(raw(sz), local_path)
     invisible(local_path)
@@ -76,10 +89,13 @@ test_that("oja_sync scarica solo i file mancanti e salta i duplicati per dimensi
     downloader = fake_dl,
     ingest = FALSE
   )
+  # Gli archivi mensili: solo i due mancanti, il terzo e' saltato per size match.
   expect_setequal(
-    downloaded,
+    setdiff(downloaded, .oja_dim_files),
     c("ITC4_2026_4_postings_raw.zip", "ITC4_2026_4_skills.zip")
   )
+  # Le dimensioni globali sono sempre riscaricate.
+  expect_true(all(.oja_dim_files %in% downloaded))
   expect_equal(res$snapshot_id, "ITC4_2026_4")
   expect_true(res$downloaded)
   expect_false(res$ingested)
@@ -99,6 +115,7 @@ test_that("oja_sync salta gli snapshot gia' presenti in dim_snapshot", {
     user = "u",
     password = "p",
     remote_dir = "/x",
+    dim_dir = "/data_v2/dim_table",
     local_dir = fx$zip_dir
   )
   fake_lister <- function(config, region_code) {
@@ -123,6 +140,9 @@ test_that("oja_sync salta gli snapshot gia' presenti in dim_snapshot", {
   }
   called <- FALSE
   fake_dl <- function(remote_name, local_path, config) {
+    if (remote_name %in% .oja_dim_files) {
+      return(.write_dummy_dim(local_path))
+    }
     called <<- TRUE
     invisible(local_path)
   }

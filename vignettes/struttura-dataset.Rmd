@@ -56,12 +56,27 @@ di metadata che tiene traccia degli snapshot ingeriti.
    dim_source     ---+
 ```
 
-Tutte le dimensioni si **accumulano fra snapshot** via UPSERT
-(`INSERT ... ON CONFLICT DO NOTHING`): ogni nuovo snapshot aggiunge le sole
-chiavi nuove, lasciando intatti i record esistenti. Le tabelle dei fatti
-sono **partizionate logicamente** per `snapshot_id`: la chiave primaria
-include sempre lo snapshot, e i `DELETE WHERE snapshot_id = ...` cancellano
-selettivamente uno snapshot per re-ingestirlo.
+Le undici dimensioni si dividono in due gruppi con strategia di
+aggiornamento diversa:
+
+* **Derivate dalle postings** (`dim_geography`, `dim_contract`,
+  `dim_education`, `dim_sector`, `dim_experience`, `dim_working_hours`,
+  `dim_salary`, `dim_source`) si **accumulano fra snapshot** via UPSERT
+  (`INSERT ... ON CONFLICT DO NOTHING`): ogni nuovo snapshot aggiunge le
+  sole chiavi nuove, lasciando intatti i record esistenti.
+* **Globali del fornitore** (`dim_cp2021`, `dim_esco_occupation`,
+  `dim_esco_skill`) vengono **ricaricate integralmente** (`DELETE` seguita
+  da re-`INSERT`) a ogni ingest, a partire dai tre CSV serviti da
+  `/data_v2/dim_table`. Non sono derivabili dagli archivi dello snapshot —
+  le postings portano solo le chiavi esterne `cp2021_id_level_5` e
+  `idesco_level_5`, le skill solo `idescoskill_level_3` — e, essendo
+  vendor-authoritative e di dimensioni contenute (~12 MB complessivi), la
+  ricarica integrale evita la staleness che l'UPSERT introdurrebbe se il
+  fornitore rinominasse o rimuovesse una chiave.
+
+Le tabelle dei fatti sono **partizionate logicamente** per `snapshot_id`: la
+chiave primaria include sempre lo snapshot, e i `DELETE WHERE snapshot_id =
+...` cancellano selettivamente uno snapshot per re-ingestirlo.
 
 # 3. Convenzioni di tipizzazione
 
@@ -158,7 +173,8 @@ PK `idsector`. Settore ATECO con i due livelli di aggregazione.
 ## 5.3 `dim_cp2021`
 
 PK `cp2021_id_level_5`. Classificazione delle Professioni ISTAT 2021,
-gerarchia a 5 livelli.
+gerarchia a 5 livelli. Dimensione **globale del fornitore**, ricaricata
+integralmente da `dim_occ_cp2021.csv` a ogni ingest (vedi §2).
 
 | Colonna | Tipo |
 |---|---|
@@ -175,7 +191,10 @@ gerarchia a 5 livelli.
 
 ## 5.4 `dim_esco_occupation`
 
-PK `idesco_level_5`. ESCO occupation, livelli 4 e 5 con URI.
+PK `idesco_level_5`. Dimensione **globale del fornitore**, ricaricata
+integralmente da `dim_occ_esco.csv` a ogni ingest. Gerarchia ESCO completa
+sui cinque livelli. La colonna `uri` presente fino a 0.2.0 non è più
+disponibile nella sorgente `data_v2` e non compare più nello schema.
 
 | Colonna | Tipo |
 |---|---|
@@ -183,34 +202,52 @@ PK `idesco_level_5`. ESCO occupation, livelli 4 e 5 con URI.
 | `esco_level_5` | VARCHAR |
 | `idesco_level_4` | VARCHAR |
 | `esco_level_4` | VARCHAR |
-| `uri` | VARCHAR |
+| `idesco_level_3` | VARCHAR |
+| `esco_level_3` | VARCHAR |
+| `idesco_level_2` | VARCHAR |
+| `esco_level_2` | VARCHAR |
+| `idesco_level_1` | VARCHAR |
+| `esco_level_1` | VARCHAR |
 
 ## 5.5 `dim_esco_skill`
 
-PK `idescoskill_level_3`. La dimensione piu' larga: 30 colonne con tutte
-le proprieta' della skill.
+PK `idescoskill_level_3`. Dimensione **globale del fornitore**, ricaricata
+integralmente da `dim_esco_skills.csv` a ogni ingest. La più larga per
+numero di colonne, con tutte le proprietà della skill. Dalla migrazione a
+`data_v2` le colonne descrittive portano il prefisso `esco_v010200_`
+(tassonomia ESCO del fornitore, versione v01.02.00, contro `esco_v0101_`
+delle versioni precedenti). Le colonne `onet_hier_level_1/2/3`,
+`pillar_softskills`, `pillar_digitalskills`, `pillar_bigdata` e
+`esco_v0101_ict` presenti fino a 0.2.0 non hanno più un sostituto nella
+sorgente e non compaiono nello schema; `esco_v010200_digital` e
+`esco_v010200_research` sono nuove.
 
 | Colonna | Tipo | Categoria |
 |---|---|---|
 | `idescoskill_level_3` (PK) | VARCHAR | identificativo |
-| `escoskill_level_3` | VARCHAR | label IT |
-| `esco_v0101_obsolete` | VARCHAR | flag |
-| `esco_v0101_description` | VARCHAR | descrizione |
-| `onet_hier_level_1/2/3` | VARCHAR | gerarchia ONET |
-| `pillar_softskills` | VARCHAR | flag |
-| `pillar_digitalskills` | VARCHAR | flag |
-| `pillar_bigdata` | VARCHAR | flag |
-| `esco_v0101_uri` | VARCHAR | URI ESCO |
-| `esco_v0101_skillstype` | VARCHAR | classe ESCO |
-| `esco_v0101_reusetype` | VARCHAR | riusabilita' (cross-sector / transversal / ...) |
-| `esco_v0101_digcomp` | VARCHAR | flag DigComp |
-| `esco_v0101_green` | VARCHAR | flag green |
-| `esco_v0101_ict` | VARCHAR | flag ICT |
-| `esco_v0101_language` | VARCHAR | flag language |
-| `esco_v0101_transversal` | VARCHAR | flag |
-| `esco_v0101_hier_code_0..3` | VARCHAR | codice gerarchia ESCO |
-| `esco_v0101_hier_uri_0..3` | VARCHAR | URI gerarchia ESCO |
-| `esco_v0101_hier_label_0..3` | VARCHAR | label gerarchia ESCO |
+| `esco_v010200_label` | VARCHAR | label |
+| `esco_v010200_uri` | VARCHAR | URI ESCO |
+| `esco_v010200_obsolete` | VARCHAR | flag |
+| `esco_v010200_skillstype` | VARCHAR | classe ESCO |
+| `esco_v010200_reusetype` | VARCHAR | riusabilità (cross-sector / transversal / ...) |
+| `esco_v010200_description` | VARCHAR | descrizione |
+| `esco_v010200_digcomp` | VARCHAR | flag DigComp |
+| `esco_v010200_green` | VARCHAR | flag green |
+| `esco_v010200_hier_code_3` | VARCHAR | codice gerarchia ESCO, livello 3 |
+| `esco_v010200_hier_uri_3` | VARCHAR | URI gerarchia ESCO, livello 3 |
+| `esco_v010200_hier_label_3` | VARCHAR | label gerarchia ESCO, livello 3 |
+| `esco_v010200_hier_code_2` | VARCHAR | codice gerarchia ESCO, livello 2 |
+| `esco_v010200_hier_uri_2` | VARCHAR | URI gerarchia ESCO, livello 2 |
+| `esco_v010200_hier_label_2` | VARCHAR | label gerarchia ESCO, livello 2 |
+| `esco_v010200_hier_code_1` | VARCHAR | codice gerarchia ESCO, livello 1 |
+| `esco_v010200_hier_uri_1` | VARCHAR | URI gerarchia ESCO, livello 1 |
+| `esco_v010200_hier_label_1` | VARCHAR | label gerarchia ESCO, livello 1 |
+| `esco_v010200_hier_uri_0` | VARCHAR | URI gerarchia ESCO, livello 0 (nessun `hier_code_0` in sorgente) |
+| `esco_v010200_hier_label_0` | VARCHAR | label gerarchia ESCO, livello 0 |
+| `esco_v010200_digital` | VARCHAR | flag digital |
+| `esco_v010200_language` | VARCHAR | flag language |
+| `esco_v010200_transversal` | VARCHAR | flag transversal |
+| `esco_v010200_research` | VARCHAR | flag research |
 
 ## 5.6 Dimensioni "piatte"
 
@@ -257,26 +294,32 @@ DBI::dbGetQuery(con, "
   SELECT eo.idesco_level_4, eo.esco_level_4, COUNT(*) AS n
     FROM fact_postings p
     LEFT JOIN dim_esco_occupation eo ON eo.idesco_level_5 = p.idesco_level_5
-   WHERE p.snapshot_id = 'ITC4_2026_2'
+   WHERE p.snapshot_id = 'ITC4_2026_6'
    GROUP BY eo.idesco_level_4, eo.esco_level_4
    ORDER BY n DESC
    LIMIT 10
 ")
 ```
 
-## 7.2 Skill richieste piu' frequentemente per una professione
+## 7.2 Skill richieste più frequentemente per una professione
+
+`fact_postings` non porta `idesco_level_4` (solo `idesco_level_5`): il
+filtro sul livello 4 richiede il join su `dim_esco_occupation`, come nella
+query precedente.
 
 ```{r}
 DBI::dbGetQuery(con, "
-  SELECT d.idescoskill_level_3, d.escoskill_level_3, COUNT(*) AS n
+  SELECT d.idescoskill_level_3, d.esco_v010200_label, COUNT(*) AS n
     FROM fact_skills s
     JOIN fact_postings p
       ON p.snapshot_id = s.snapshot_id AND p.general_id = s.general_id
+    JOIN dim_esco_occupation eo
+      ON eo.idesco_level_5 = p.idesco_level_5
     JOIN dim_esco_skill d
       ON d.idescoskill_level_3 = s.idescoskill_level_3
-   WHERE p.idesco_level_4 IS NULL  -- esempio: cambiare con valore reale
-     AND p.snapshot_id = 'ITC4_2026_2'
-   GROUP BY d.idescoskill_level_3, d.escoskill_level_3
+   WHERE eo.idesco_level_4 = '...'  -- esempio: sostituire con un codice reale
+     AND p.snapshot_id = 'ITC4_2026_6'
+   GROUP BY d.idescoskill_level_3, d.esco_v010200_label
    ORDER BY n DESC
    LIMIT 20
 ")
@@ -287,7 +330,7 @@ DBI::dbGetQuery(con, "
 ```{r}
 DBI::dbGetQuery(con, "
   SELECT s.idmacro_sector, s.macro_sector,
-         AVG(CASE WHEN d.esco_v0101_green = 'Y' THEN 1.0 ELSE 0 END)
+         AVG(CASE WHEN d.esco_v010200_green = 'Y' THEN 1.0 ELSE 0 END)
            AS green_share,
          COUNT(*) AS n_skill_rows
     FROM fact_skills fs
@@ -295,7 +338,7 @@ DBI::dbGetQuery(con, "
       ON p.snapshot_id = fs.snapshot_id AND p.general_id = fs.general_id
     LEFT JOIN dim_sector s        ON s.idsector = p.idsector
     LEFT JOIN dim_esco_skill d    ON d.idescoskill_level_3 = fs.idescoskill_level_3
-   WHERE fs.snapshot_id = 'ITC4_2026_2'
+   WHERE fs.snapshot_id = 'ITC4_2026_6'
    GROUP BY s.idmacro_sector, s.macro_sector
    ORDER BY green_share DESC
 ")
@@ -306,24 +349,25 @@ DBI::dbGetQuery(con, "
 ```{r}
 library(dplyr)
 
-oja_postings(con, snapshots = "ITC4_2026_2") |>
+oja_postings(con, snapshots = "ITC4_2026_6") |>
   left_join(dplyr::tbl(con, "dim_esco_occupation"), by = "idesco_level_5") |>
   count(idesco_level_4, esco_level_4, sort = TRUE) |>
   head(10) |>
   collect()
 ```
 
-# 8. Compatibilita' con `skillviz`
+# 8. Compatibilità con `skillviz`
 
 `oja_normalised(con, snapshots = ...)` ricostruisce la lista a tre
 elementi `(postings, skills, companies)` prodotta da
-`skillviz::normalize_ojv()`. La parita' e' bit-exact su `general_id`. Le
+`skillviz::normalize_ojv()`. La parità è bit-exact su `general_id`. Le
 colonne in `skills` riportano i nomi originali in maiuscolo
 (`IDESCOSKILL_LEVEL_3`, `ESCO_V0101_GREEN`, ...) per evitare un cambio
-contrattuale ai consumatori a valle.
+contrattuale ai consumatori a valle; dalla migrazione a `data_v2` la
+tabella espone meno colonne di prima (vedi `NEWS.md`).
 
 ```{r}
-ojv <- oja_normalised(con, snapshots = "ITC4_2026_2")
+ojv <- oja_normalised(con, snapshots = "ITC4_2026_6")
 # stesso shape di skillviz::normalize_ojv():
 # ojv$postings, ojv$skills, ojv$companies (data.table, key = general_id)
 ```
@@ -335,16 +379,21 @@ chiama in coda `oja_ingest_dirs()`. Le credenziali vivono in `.Renviron`,
 non vengono mai esposte sulla riga di comando.
 
 ```
-ITAPOSTS_SFTP_HOST=sftp.lightcast.example
+ITAPOSTS_SFTP_HOST=custom-delivery.lightcast.io
 ITAPOSTS_SFTP_PORT=22
 ITAPOSTS_SFTP_USER=...
 ITAPOSTS_SFTP_PASSWORD=...
-ITAPOSTS_SFTP_REMOTE_DIR=/exports/oja
+ITAPOSTS_SFTP_REMOTE_DIR=/data_v2/fact_table/ITC4
+ITAPOSTS_SFTP_DIM_DIR=/data_v2/dim_table
 ITAPOSTS_SFTP_LOCAL_DIR=~/Documents/funzioni/itaposts/incoming
 ```
 
-`PORT` (default 22) e `LOCAL_DIR` (default `tempdir()/itaposts_incoming`)
-sono opzionali; le altre quattro variabili sono obbligatorie.
+`REMOTE_DIR` punta alla directory degli archivi mensili di una singola
+regione; `DIM_DIR` punta alle tre tabelle dimensionali globali del
+fornitore, non suddivise per regione (default `/data_v2/dim_table` se
+omessa). `PORT` (default 22) e `LOCAL_DIR` (default
+`tempdir()/itaposts_incoming`) sono opzionali; `HOST`, `USER`, `PASSWORD` e
+`REMOTE_DIR` sono obbligatorie.
 
 Flusso completo dalla prima volta:
 
@@ -353,22 +402,35 @@ readRenviron("~/.Renviron")
 itaposts::oja_sync(region_code = "ITC4")
 ```
 
-`oja_sync()` e' idempotente: file locali con stessa dimensione del remoto
-vengono saltati, snapshot gia' presenti in `dim_snapshot` non vengono
-reingeriti (a meno di `overwrite = TRUE`). Per scaricare senza ingerire,
-passare `ingest = FALSE`.
+`oja_sync()` è idempotente: scarica sempre le tre tabelle dimensionali
+globali (nessuno skip-by-size, dato il costo contenuto), mentre gli
+archivi mensili per snapshot vengono saltati se già presenti localmente
+con la stessa dimensione del remoto; snapshot già presenti in
+`dim_snapshot` non vengono reingeriti (a meno di `overwrite = TRUE`). Per
+scaricare senza ingerire, passare `ingest = FALSE`.
 
 # 10. Performance e dimensioni
 
-Per uno snapshot mensile ITC4 tipico (89mila annunci, 880mila righe di
-skill):
+Risincronizzazione completa validata contro il server vendor reale,
+regione ITC4, 42 snapshot mensili (`ITC4_2023_1`..`ITC4_2026_6`):
 
-* DuckDB su disco: ~67 MB (vs 117 MB di archivi zip sorgenti)
-* Ingestione completa: ~10 secondi
-* `oja_normalised()`: ~1.1 secondi
+* Totale: 3.332.448 postings, 31.143.630 righe di skill
+* DuckDB su disco: 2,1 GB
+
+Per un singolo snapshot mensile ITC4 di dimensioni tipiche nella serie
+storica corrente (~79mila annunci, ~740mila righe di skill in media su 42
+mesi):
+
+* Ingestione: qualche secondo, dominata dallo streaming di `fact_skills`
+  via `read_csv_auto`
 * Aggregazioni colonnari (count per occupazione, skill x settore): da 10
-  a 50 ms
+  a 50 ms, indipendentemente dal numero di snapshot già accumulati nel
+  database (i fatti sono partizionati per `snapshot_id`, le query filtrate
+  su uno snapshot non scandiscono l'intera tabella)
 
-L'aggiunta di un nuovo snapshot e' incrementale: i fatti accolgono solo le
-righe del nuovo `snapshot_id`, le dimensioni si limitano a integrare i
-nuovi codici via UPSERT.
+L'aggiunta di un nuovo snapshot è incrementale per le sole dimensioni
+derivate dalle postings: i fatti accolgono solo le righe del nuovo
+`snapshot_id`, quelle dimensioni integrano i nuovi codici via UPSERT. Le
+tre dimensioni globali del fornitore vengono invece ricaricate per intero
+a ogni ingest (§2), indipendentemente da quanti snapshot vengono
+processati nella stessa sessione.

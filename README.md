@@ -76,12 +76,18 @@ pensato per la migrazione progressiva delle call site a valle.
 
 `oja_sync()` legge le credenziali da `.Renviron` (`ITAPOSTS_SFTP_HOST`,
 `ITAPOSTS_SFTP_PORT`, `ITAPOSTS_SFTP_USER`, `ITAPOSTS_SFTP_PASSWORD`,
-`ITAPOSTS_SFTP_REMOTE_DIR`, `ITAPOSTS_SFTP_LOCAL_DIR`), scarica solo le
-snapshot mancanti e ingerisce in DuckDB:
+`ITAPOSTS_SFTP_REMOTE_DIR`, `ITAPOSTS_SFTP_DIM_DIR`,
+`ITAPOSTS_SFTP_LOCAL_DIR`), scarica solo le snapshot mancanti e ingerisce in
+DuckDB:
 
 ``` r
 itaposts::oja_sync()
 ```
+
+`ITAPOSTS_SFTP_REMOTE_DIR` punta alla directory degli archivi mensili di una
+regione (es. `/data_v2/fact_table/ITC4`); `ITAPOSTS_SFTP_DIM_DIR` alle tre
+tabelle dimensionali globali (default `/data_v2/dim_table`), riscaricate a
+ogni sync in `<LOCAL_DIR>/dim_table/`.
 
 ## Schema dati
 
@@ -103,7 +109,7 @@ citation("itaposts")
 Riferimento bibliografico:
 
 > Montaletti, G. (2026). *itaposts: Importazione e Normalizzazione di OJA
-> Italiani in DuckDB*. Versione 0.2.0.
+> Italiani in DuckDB*. Versione 0.3.0.
 > <https://github.com/gmontaletti/itaposts>
 
 ## Licenza

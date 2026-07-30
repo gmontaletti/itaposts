@@ -12,37 +12,56 @@ nei test.}
 }
 \value{
 Lista con campi \code{host}, \code{port}, \code{user}, \code{password}, \code{remote_dir},
-\code{local_dir}, \code{known_hosts}, \code{host_fingerprint_md5},
+\code{dim_dir}, \code{local_dir}, \code{known_hosts}, \code{host_fingerprint_md5},
 \code{host_fingerprint_sha256}, \code{private_key}, \code{public_key},
-\code{private_key_passphrase}, \code{auth_types}. I tre campi
-\verb{host_fingerprint_*} e \code{auth_types} sono informativi: il backend
-OpenSSH usa \code{known_hosts} ed eventualmente
-\code{PreferredAuthentications} derivato da \code{auth_types}.
+\code{private_key_passphrase}, \code{auth_types}. I due campi
+\verb{host_fingerprint_*} sono informativi: il backend OpenSSH usa
+\code{known_hosts} ed eventualmente \code{PreferredAuthentications} derivato da
+\code{auth_types}.
 }
 \description{
-Legge le credenziali e il percorso remoto degli snapshot OJA dalle
+Legge le credenziali e i percorsi remoti degli snapshot OJA dalle
 variabili \verb{ITAPOSTS_SFTP_*}. Le variabili \code{HOST}, \code{USER}, \code{PASSWORD} e
-\code{REMOTE_DIR} sono obbligatorie; \code{PORT} ha default \code{22} e \code{LOCAL_DIR}
-default \code{file.path(tempdir(), "itaposts_incoming")}.
+\code{REMOTE_DIR} sono obbligatorie; \code{PORT} ha default \code{22}, \code{LOCAL_DIR}
+default \code{file.path(tempdir(), "itaposts_incoming")} e \code{DIM_DIR} default
+\code{"/data_v2/dim_table"}.
 }
 \details{
+\code{REMOTE_DIR} punta alla directory degli archivi mensili di una singola
+regione (\verb{fact_table/<NUTS2>}), mentre \code{DIM_DIR} punta alle tabelle
+dimensionali globali, che non sono suddivise per regione e vivono in una
+directory sorella.
+
 Convenzione \code{.Renviron}:
 
 \if{html}{\out{<div class="sourceCode">}}\preformatted{ITAPOSTS_SFTP_HOST=sftp.lightcast.example
 ITAPOSTS_SFTP_PORT=22
 ITAPOSTS_SFTP_USER=...
 ITAPOSTS_SFTP_PASSWORD=...
-ITAPOSTS_SFTP_REMOTE_DIR=/exports/oja
+ITAPOSTS_SFTP_REMOTE_DIR=/data_v2/fact_table/ITC4
+ITAPOSTS_SFTP_DIM_DIR=/data_v2/dim_table
 ITAPOSTS_SFTP_LOCAL_DIR=~/Documents/funzioni/itaposts/incoming
 }\if{html}{\out{</div>}}
 
 Il backend SFTP del pacchetto si appoggia al client OpenSSH \code{sftp}
-invocato via \code{\link[processx:run]{processx::run()}} (libcurl su macOS CRAN non e' compilato
-con il backend libssh, quindi non parla SFTP). Il client OpenSSH e'
-presente di default su macOS e su pressoche' tutte le distribuzioni
-Linux: nessun pacchetto da installare per l'autenticazione a chiave.
-Per l'autenticazione a password serve \code{expect} (preinstallato su macOS;
-\verb{apt install expect} su Debian/Ubuntu) oppure \code{sshpass}.
+invocato via \link[processx:process]{processx::process} (libcurl su macOS CRAN non è compilato
+con il backend libssh, quindi non parla SFTP). Il client OpenSSH è
+presente di default su macOS e su pressoché tutte le distribuzioni
+Linux: nessun pacchetto aggiuntivo da installare.
+
+Le due modalità di autenticazione usano due modalità di invocazione
+diverse del client:
+\itemize{
+\item \strong{chiave privata}: \verb{sftp -b <batchfile>} con \code{BatchMode=yes}, non
+interattivo. La passphrase va caricata a parte in \code{ssh-agent}.
+\item \strong{password}: sessione interattiva su pseudo-terminale
+(\link[processx:process]{processx::process} con \code{pty = TRUE}), perché \code{sftp -b} implica
+\code{BatchMode=yes} lato SSH e con quella direttiva OpenSSH rifiuta di
+chiedere la password. I comandi vengono inviati uno per volta sul pty
+attendendo il prompt \verb{sftp>}. La password non compare mai sull'argv,
+nell'ambiente o su disco. Modalità non disponibile su Windows, dove
+\code{processx} non espone i pty.
+}
 
 La fiducia sulla chiave host SSH si configura tramite
 \code{ITAPOSTS_SFTP_KNOWN_HOSTS} (percorso a un file \code{known_hosts}): viene
@@ -51,17 +70,14 @@ propagato a \code{sftp} come \verb{-o UserKnownHostsFile=...} con
 OpenSSH moderno (\code{accept-new}), che memorizza la chiave la prima volta.
 Le variabili \code{ITAPOSTS_SFTP_HOST_FINGERPRINT_MD5} e
 \code{ITAPOSTS_SFTP_HOST_FINGERPRINT_SHA256} sono mantenute per retro-
-compatibilita' del contratto di \code{oja_sftp_config()} ma non vengono
-piu' usate (il vecchio backend libcurl le rispettava): per pinnare
+compatibilità del contratto di \code{oja_sftp_config()} ma non vengono
+più usate (il vecchio backend libcurl le rispettava): per pinnare
 l'host key con il backend OpenSSH usare \code{ITAPOSTS_SFTP_KNOWN_HOSTS}.
 
 Autenticazione SSH: per public-key impostare
 \code{ITAPOSTS_SFTP_PRIVATE_KEY} (path al file privato; opzionali
 \code{ITAPOSTS_SFTP_PUBLIC_KEY}, \code{ITAPOSTS_SFTP_PRIVATE_KEY_PASSPHRASE}).
-Quando una chiave privata e' configurata, \code{sftp} viene lanciato in
-modalita' batch (\code{BatchMode=yes}) e la passphrase deve essere caricata
-a parte in \code{ssh-agent} (questo backend non la digita per conto
-dell'utente, per non scriverla mai sull'argv). La maschera di bit
+La maschera di bit
 \code{ITAPOSTS_SFTP_AUTH_TYPES} (1=password, 2=publickey, 4=hostbased,
 8=keyboard-interactive; sommabili) viene tradotta in
 \code{PreferredAuthentications} quando differisce dal default 9

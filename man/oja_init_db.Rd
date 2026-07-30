@@ -18,11 +18,17 @@ Invisibilmente i nomi delle tabelle dello schema.
 }
 \description{
 Crea (se non esistono) tutte le tabelle dello schema OJA: due tabelle dei
-fatti (\code{fact_postings}, \code{fact_skills}), dieci dimensioni e la tabella di
+fatti (\code{fact_postings}, \code{fact_skills}), undici dimensioni e la tabella di
 metadata \code{dim_snapshot}. La funzione e' idempotente: chiamarla su un
 database gia' inizializzato non produce errori ne' modifica i dati.
 }
 \details{
+Le dimensioni si dividono in due gruppi: quelle derivate dalle postings
+(geografia, contratto, istruzione, settore, esperienza, orario, salario,
+fonte), popolate per UPSERT incrementale a ogni snapshot, e quelle globali
+del fornitore (\code{dim_cp2021}, \code{dim_esco_occupation}, \code{dim_esco_skill}),
+ricaricate integralmente dai file \code{dim_table} a ogni ingest.
+
 Apre una connessione in scrittura sul percorso \code{path} e la chiude prima di
 restituire. Se il chiamante ha gia' una connessione in scrittura aperta puo'
 passarla via \code{con}; in tal caso non viene aperta ne' chiusa alcuna
