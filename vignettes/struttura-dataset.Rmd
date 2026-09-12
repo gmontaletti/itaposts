@@ -26,6 +26,14 @@ essere il punto unico di accesso ai dati OJA per i progetti dell'ecosistema
 (`skillviz`, `skillviz_workflow`, report ad hoc): l'ingestione paga il costo
 di parsing una volta sola, le query successive restano colonnari e veloci.
 
+Se la variabile d'ambiente `ITAPOSTS_DB` è valorizzata, `oja_db_path()`
+restituisce il suo valore: un file DuckDB oppure un catalogo DuckLake con
+prefisso `ducklake:`. In questo secondo caso `oja_connect()` collega il
+catalogo e rende corrente lo schema `lake.oja`: tabelle, colonne e query
+descritte in questa vignetta restano le stesse. Su DuckLake le tabelle non
+hanno PRIMARY KEY; l'unicità delle chiavi indicate come PK nel seguito è
+verificata dall'ingestione prima del COMMIT.
+
 Connessione:
 
 ```{r}

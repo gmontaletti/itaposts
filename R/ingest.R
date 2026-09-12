@@ -139,29 +139,49 @@
   dt_postings
 }
 
-# UPSERT generico: scrive una temp table dentro la connessione e fa
-# INSERT ... SELECT ... ON CONFLICT DO NOTHING contro la dim di destinazione.
-.upsert_dim <- function(con, dim_table, dim_data, conflict_col) {
+# UPSERT portabile: scrive una temp table di staging e inserisce nella dim di
+# destinazione solo le chiavi assenti (anti-join), con una sola riga per
+# chiave. A parità di chiave vince la prima riga nell'ordine di `dim_data`,
+# come con il precedente ON CONFLICT DO NOTHING; per le dimensioni derivate
+# dalle postings è la riga del posting con grab_date più recente. Non usa
+# ON CONFLICT, che richiede una PRIMARY KEY assente su DuckLake.
+.upsert_dim <- function(con, dim_table, dim_data, key) {
   if (!nrow(dim_data)) {
     return(invisible(0L))
   }
   staging <- paste0("__stg_", dim_table)
+  stg <- data.table::copy(dim_data)
+  data.table::setDT(stg)
+  data.table::set(stg, j = "stg_ord__", value = seq_len(nrow(stg)))
   duckdb::dbWriteTable(
     con,
     staging,
-    dim_data,
+    stg,
     temporary = TRUE,
     overwrite = TRUE
   )
-  cols <- DBI::dbQuoteIdentifier(con, names(dim_data))
-  cols_csv <- paste(cols, collapse = ", ")
+  cols_csv <- paste(
+    DBI::dbQuoteIdentifier(con, names(dim_data)),
+    collapse = ", "
+  )
+  key_q <- DBI::dbQuoteIdentifier(con, key)
   sql <- sprintf(
-    "INSERT INTO %s (%s) SELECT %s FROM %s ON CONFLICT (%s) DO NOTHING;",
+    "INSERT INTO %1$s (%2$s)
+     SELECT %2$s
+       FROM (
+         SELECT *,
+                row_number() OVER (PARTITION BY %3$s ORDER BY stg_ord__) AS stg_rn__
+           FROM %4$s
+          WHERE %5$s
+       ) s
+      WHERE s.stg_rn__ = 1
+        AND NOT EXISTS (SELECT 1 FROM %1$s d WHERE %6$s);",
     DBI::dbQuoteIdentifier(con, dim_table),
     cols_csv,
-    cols_csv,
+    paste(key_q, collapse = ", "),
     DBI::dbQuoteIdentifier(con, staging),
-    DBI::dbQuoteIdentifier(con, conflict_col)
+    paste(sprintf("%s IS NOT NULL", key_q), collapse = " AND "),
+    paste(sprintf("d.%s = s.%s", key_q, key_q), collapse = " AND ")
   )
   n <- DBI::dbExecute(con, sql)
   DBI::dbExecute(
@@ -380,22 +400,8 @@
   )
 }
 
-# Mapping (table -> conflict column) per .upsert_dim.
-.dim_pk <- function() {
-  c(
-    dim_geography = "idcity",
-    dim_contract = "idcontract",
-    dim_education = "ideducational_level",
-    dim_sector = "idsector",
-    dim_experience = "idexperience",
-    dim_working_hours = "idworking_hours",
-    dim_salary = "idsalary",
-    dim_source = "source"
-  )
-}
-
 # Stream dello skills CSV in fact_skills. La CSV sorgente porta soltanto
-# (general_id, date, IDESCOSKILL_LEVEL_3): le proprieta' delle skill arrivano
+# (general_id, date, IDESCOSKILL_LEVEL_3): le proprietà delle skill arrivano
 # da dim_esco_skill, ricaricata da .load_global_dims().
 .stream_skills <- function(con, skills_zip, snapshot_id) {
   csv_path <- .unzip_to_temp(skills_zip)
@@ -407,65 +413,126 @@
     csv_lit
   )
 
-  # general_id come VARCHAR per coerenza con fact_postings
+  # general_id come VARCHAR per coerenza con fact_postings. DISTINCT deduplica
+  # sulla chiave completa della tabella; l'anti-join rende l'inserimento
+  # idempotente senza ON CONFLICT (assente su DuckLake). Il filtro esplicito
+  # su snapshot_id nella sottoquery limita la scansione di fact_skills allo
+  # snapshot corrente.
   sql_fact <- sprintf(
     "INSERT INTO fact_skills (snapshot_id, general_id, idescoskill_level_3)
-     SELECT DISTINCT ?, CAST(general_id AS VARCHAR), idescoskill_level_3
-       FROM %s
-      WHERE general_id IS NOT NULL
-        AND idescoskill_level_3 IS NOT NULL
-        AND idescoskill_level_3 <> ''
-     ON CONFLICT DO NOTHING;",
+     SELECT s.snapshot_id, s.general_id, s.idescoskill_level_3
+       FROM (
+         SELECT DISTINCT
+                CAST(? AS VARCHAR)          AS snapshot_id,
+                CAST(general_id AS VARCHAR) AS general_id,
+                idescoskill_level_3
+           FROM %s
+          WHERE general_id IS NOT NULL
+            AND idescoskill_level_3 IS NOT NULL
+            AND idescoskill_level_3 <> ''
+       ) s
+      WHERE NOT EXISTS (
+        SELECT 1 FROM fact_skills f
+         WHERE f.snapshot_id = ?
+           AND f.snapshot_id = s.snapshot_id
+           AND f.general_id = s.general_id
+           AND f.idescoskill_level_3 = s.idescoskill_level_3
+      );",
     read_csv
   )
-  n <- DBI::dbExecute(con, sql_fact, params = list(snapshot_id))
+  n <- DBI::dbExecute(con, sql_fact, params = list(snapshot_id, snapshot_id))
   invisible(as.integer(n))
 }
 
-# Validazioni post-ingest. Solleva con messaggio dettagliato in caso di errore.
+# Conta, per ogni tabella dello schema, le chiavi di .oja_keys() duplicate e
+# quelle con almeno una componente nulla. I fatti sono controllati sul solo
+# snapshot, le dimensioni e dim_snapshot per intero (sono piccole).
+.oja_key_violations <- function(con, snapshot_id) {
+  keys <- .oja_keys()
+  rows <- lapply(names(keys), function(tbl) {
+    key_q <- DBI::dbQuoteIdentifier(con, keys[[tbl]])
+    by_snapshot <- startsWith(tbl, "fact_")
+    sql <- sprintf(
+      "SELECT
+         (SELECT COUNT(*) FROM (
+            SELECT 1 FROM %1$s WHERE %2$s GROUP BY %3$s HAVING COUNT(*) > 1
+          )) AS n_duplicate,
+         (SELECT COUNT(*) FROM %1$s WHERE %2$s AND (%4$s)) AS n_null",
+      DBI::dbQuoteIdentifier(con, tbl),
+      if (by_snapshot) "snapshot_id = ?" else "TRUE",
+      paste(key_q, collapse = ", "),
+      paste(sprintf("%s IS NULL", key_q), collapse = " OR ")
+    )
+    res <- if (by_snapshot) {
+      DBI::dbGetQuery(con, sql, params = list(snapshot_id, snapshot_id))
+    } else {
+      DBI::dbGetQuery(con, sql)
+    }
+    list(
+      table = tbl,
+      n_duplicate = as.integer(res$n_duplicate),
+      n_null = as.integer(res$n_null)
+    )
+  })
+  data.table::rbindlist(rows)
+}
+
+# Validazioni prima del COMMIT. Solleva con messaggio dettagliato in caso di
+# errore. Su DuckLake non esistono PRIMARY KEY: l'unicità delle chiavi è
+# verificata qui per tutte le tabelle, oltre all'integrità referenziale
+# skill -> posting.
 .validate_snapshot <- function(con, snapshot_id) {
-  res <- DBI::dbGetQuery(
-    con,
-    "SELECT
-       (SELECT COUNT(*)            FROM fact_postings WHERE snapshot_id = ?) AS n_post,
-       (SELECT COUNT(DISTINCT general_id) FROM fact_postings WHERE snapshot_id = ?) AS n_post_unique,
-       (SELECT COUNT(*) FROM fact_skills s
-          WHERE s.snapshot_id = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM fact_postings p
-               WHERE p.snapshot_id = s.snapshot_id
-                 AND p.general_id  = s.general_id
-            )) AS n_orphan_skills",
-    params = list(snapshot_id, snapshot_id, snapshot_id)
-  )
-  if (res$n_post != res$n_post_unique) {
+  keys <- .oja_key_violations(con, snapshot_id)
+  bad <- keys[n_duplicate > 0L | n_null > 0L]
+  if (nrow(bad)) {
+    detail <- sprintf(
+      "%s: %d chiavi duplicate, %d chiavi con valori nulli.",
+      bad$table,
+      bad$n_duplicate,
+      bad$n_null
+    )
     cli::cli_abort(c(
-      "Dedup non riuscito: {res$n_post} righe in fact_postings ma {res$n_post_unique} general_id distinti.",
+      "Chiavi duplicate o con valori nulli dopo l'ingestione.",
+      stats::setNames(detail, rep("x", length(detail))),
       "i" = "Snapshot: {.val {snapshot_id}}."
     ))
   }
+  res <- DBI::dbGetQuery(
+    con,
+    "SELECT COUNT(*) AS n_orphan_skills
+       FROM fact_skills s
+      WHERE s.snapshot_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM fact_postings p
+           WHERE p.snapshot_id = s.snapshot_id
+             AND p.general_id  = s.general_id
+        )",
+    params = list(snapshot_id)
+  )
   if (res$n_orphan_skills > 0L) {
     cli::cli_abort(c(
       "{res$n_orphan_skills} righe in fact_skills senza posting corrispondente.",
       "i" = "Snapshot: {.val {snapshot_id}}."
     ))
   }
-  invisible(res)
+  invisible(keys)
 }
 
 # 2. Ingestione di un singolo snapshot ---------------------------------------
 
-#' Ingerisce un singolo snapshot OJA nel database DuckDB
+#' Ingerisce un singolo snapshot OJA nel database
 #'
 #' Legge i tre archivi zip Lightcast (`<snapshot_id>_postings.zip`,
 #' `<snapshot_id>_postings_raw.zip`, `<snapshot_id>_skills.zip`) presenti in
 #' `zip_dir`, deduplica i posting su `general_id` mantenendo la riga con
-#' `(year, month, day)_grab_date` piu' recente, costruisce le dimensioni
+#' `(year, month, day)_grab_date` più recente, costruisce le dimensioni
 #' derivate dalle postings (UPSERT), alimenta `fact_postings` e — via DuckDB
 #' `read_csv_auto` — anche `fact_skills` senza materializzare la tabella delle
-#' skill (~27M righe) in R. L'intera operazione e' avvolta in una singola
-#' transazione con validazione di unicita' e integrita' referenziale prima
-#' del COMMIT.
+#' skill (~27M righe) in R. L'intera operazione, compresa la rimozione dello
+#' snapshot omonimo con `overwrite = TRUE`, è avvolta in una singola
+#' transazione con validazione di unicità delle chiavi e di integrità
+#' referenziale prima del COMMIT: in caso di errore il database resta
+#' com'era.
 #'
 #' @details
 #' Le dimensioni globali del fornitore (`dim_cp2021`, `dim_esco_occupation`,
@@ -480,6 +547,18 @@
 #' sentinella: non corrisponde a nessuna chiave di `dim_esco_occupation` e i
 #' join in lettura restituiscono `NA` per le descrizioni.
 #'
+#' Il database può essere un file DuckDB o un catalogo DuckLake (percorso
+#' `ducklake:`, vedi [oja_connect()]). Le tabelle DuckLake non hanno PRIMARY
+#' KEY: l'UPSERT delle dimensioni e l'inserimento delle skill usano un
+#' anti-join con deduplica esplicita per chiave (a parità di chiave vince la
+#' riga del posting più recente) e la validazione controlla l'unicità delle
+#' chiavi di tutte le tabelle. Senza transazione esterna i dati di uno
+#' snapshot OJA vengono scritti con un solo commit.
+#'
+#' Se `con` ha già una transazione aperta, la funzione vi partecipa senza
+#' COMMIT né ROLLBACK: la conclusione della transazione e la gestione
+#' dell'errore spettano al chiamante.
+#'
 #' @param zip_dir Directory che contiene i tre archivi.
 #' @param snapshot_id Identificativo dello snapshot, es. `"ITC4_2026_2"`.
 #' @param overwrite Logico. Se `TRUE`, rimuove l'eventuale snapshot omonimo
@@ -489,9 +568,10 @@
 #'   Default: `zip_dir`. Con `NULL` la ricarica delle dimensioni globali viene
 #'   saltata (utile quando il chiamante l'ha gia' eseguita, come fa
 #'   [oja_ingest_dirs()]).
-#' @param path Percorso del file DuckDB. Default: [oja_db_path()].
-#' @param con Connessione DuckDB in scrittura, opzionale. Quando fornita la
-#'   funzione non apre/chiude connessioni.
+#' @param path Percorso del file DuckDB o del catalogo DuckLake. Default:
+#'   [oja_db_path()]. Ignorato se `con` non è `NULL`.
+#' @param con Connessione in scrittura, opzionale. Quando fornita la
+#'   funzione non apre né chiude connessioni.
 #'
 #' @return Invisibilmente una lista con `snapshot_id`, `n_postings`,
 #'   `n_skills`, `ingested_at`.
@@ -526,28 +606,12 @@ oja_ingest_snapshot <- function(
     "SELECT COUNT(*) AS n FROM dim_snapshot WHERE snapshot_id = ?",
     params = list(snapshot_id)
   )
-  if (exists_q$n > 0L) {
-    if (!overwrite) {
-      cli::cli_abort(c(
-        "Snapshot {.val {snapshot_id}} gia' presente nel database.",
-        "i" = "Usa {.code overwrite = TRUE} per reingerirlo."
-      ))
-    }
-    DBI::dbExecute(
-      con,
-      "DELETE FROM fact_skills    WHERE snapshot_id = ?",
-      params = list(snapshot_id)
-    )
-    DBI::dbExecute(
-      con,
-      "DELETE FROM fact_postings  WHERE snapshot_id = ?",
-      params = list(snapshot_id)
-    )
-    DBI::dbExecute(
-      con,
-      "DELETE FROM dim_snapshot   WHERE snapshot_id = ?",
-      params = list(snapshot_id)
-    )
+  already <- exists_q$n > 0L
+  if (already && !overwrite) {
+    cli::cli_abort(c(
+      "Snapshot {.val {snapshot_id}} gia' presente nel database.",
+      "i" = "Usa {.code overwrite = TRUE} per reingerirlo."
+    ))
   }
 
   cli::cli_inform("Lettura postings da {.path {basename(zips$postings)}}...")
@@ -597,77 +661,82 @@ oja_ingest_snapshot <- function(
     companyname = postings$companyname
   )
 
-  DBI::dbExecute(con, "BEGIN TRANSACTION;")
-  ok <- FALSE
-  on.exit(
-    {
-      if (!ok) try(DBI::dbExecute(con, "ROLLBACK;"), silent = TRUE)
-    },
-    add = TRUE
-  )
-
-  if (!is.null(dim_dir)) {
-    .load_global_dims(con, dim_dir)
-  }
-
-  cli::cli_inform("Costruzione e UPSERT delle dimensioni...")
-  dims <- .build_postings_dims(postings)
-  pk_map <- .dim_pk()
-  for (tbl in names(dims)) {
-    .upsert_dim(con, tbl, dims[[tbl]], pk_map[[tbl]])
-  }
-
-  cli::cli_inform("Caricamento {nrow(fact_dt)} righe in fact_postings...")
-  duckdb::dbWriteTable(
-    con,
-    "__stg_fact_postings",
-    fact_dt,
-    temporary = TRUE,
-    overwrite = TRUE
-  )
-  DBI::dbExecute(
-    con,
-    sprintf(
-      "INSERT INTO fact_postings (%s) SELECT %s FROM __stg_fact_postings;",
-      paste(names(fact_dt), collapse = ", "),
-      paste(names(fact_dt), collapse = ", ")
-    )
-  )
-  DBI::dbExecute(con, "DROP TABLE __stg_fact_postings;")
-
-  cli::cli_inform("Streaming skills da {.path {basename(zips$skills)}}...")
-  n_skills <- .stream_skills(con, zips$skills, snapshot_id)
-
-  cli::cli_inform("Validazione snapshot...")
-  .validate_snapshot(con, snapshot_id)
-
   ingested_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%OS3")
   itaposts_ver <- tryCatch(
     as.character(utils::packageVersion("itaposts")),
     error = function(e) NA_character_
   )
-  DBI::dbExecute(
-    con,
-    "INSERT INTO dim_snapshot
-       (snapshot_id, region_code, year, month, ingested_at,
-        n_postings, n_skills, source_zip_postings, source_zip_skills, itaposts_version)
-     VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?);",
-    params = list(
-      snapshot_id,
-      meta$region_code,
-      meta$year,
-      meta$month,
-      ingested_at,
-      nrow(fact_dt),
-      n_skills,
-      basename(zips$postings),
-      basename(zips$skills),
-      itaposts_ver
-    )
-  )
+  keys <- .oja_keys()
 
-  DBI::dbExecute(con, "COMMIT;")
-  ok <- TRUE
+  # Rimozione dello snapshot omonimo, dimensioni, fatti, metadata e
+  # validazione in una sola transazione: un errore annulla anche i DELETE e
+  # lo snapshot precedente resta intatto.
+  n_skills <- .oja_with_transaction(con, {
+    if (already) {
+      for (tbl in c("fact_skills", "fact_postings", "dim_snapshot")) {
+        DBI::dbExecute(
+          con,
+          sprintf("DELETE FROM %s WHERE snapshot_id = ?;", tbl),
+          params = list(snapshot_id)
+        )
+      }
+    }
+
+    if (!is.null(dim_dir)) {
+      .load_global_dims(con, dim_dir)
+    }
+
+    cli::cli_inform("Costruzione e UPSERT delle dimensioni...")
+    dims <- .build_postings_dims(postings)
+    for (tbl in names(dims)) {
+      .upsert_dim(con, tbl, dims[[tbl]], keys[[tbl]])
+    }
+
+    cli::cli_inform("Caricamento {nrow(fact_dt)} righe in fact_postings...")
+    duckdb::dbWriteTable(
+      con,
+      "__stg_fact_postings",
+      fact_dt,
+      temporary = TRUE,
+      overwrite = TRUE
+    )
+    DBI::dbExecute(
+      con,
+      sprintf(
+        "INSERT INTO fact_postings (%s) SELECT %s FROM __stg_fact_postings;",
+        paste(names(fact_dt), collapse = ", "),
+        paste(names(fact_dt), collapse = ", ")
+      )
+    )
+    DBI::dbExecute(con, "DROP TABLE __stg_fact_postings;")
+
+    cli::cli_inform("Streaming skills da {.path {basename(zips$skills)}}...")
+    n <- .stream_skills(con, zips$skills, snapshot_id)
+
+    DBI::dbExecute(
+      con,
+      "INSERT INTO dim_snapshot
+         (snapshot_id, region_code, year, month, ingested_at,
+          n_postings, n_skills, source_zip_postings, source_zip_skills, itaposts_version)
+       VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?);",
+      params = list(
+        snapshot_id,
+        meta$region_code,
+        meta$year,
+        meta$month,
+        ingested_at,
+        nrow(fact_dt),
+        n,
+        basename(zips$postings),
+        basename(zips$skills),
+        itaposts_ver
+      )
+    )
+
+    cli::cli_inform("Validazione snapshot...")
+    .validate_snapshot(con, snapshot_id)
+    n
+  })
 
   cli::cli_alert_success(
     "Snapshot {.val {snapshot_id}}: {nrow(fact_dt)} postings, {n_skills} skills."
@@ -690,8 +759,19 @@ oja_ingest_snapshot <- function(
 #' vengono saltati a meno di `overwrite = TRUE`.
 #'
 #' Le dimensioni globali del fornitore vengono ricaricate una sola volta prima
-#' del ciclo: sono identiche per tutti gli snapshot, quindi ripeterne la
-#' lettura per ogni mese sarebbe lavoro inutile.
+#' del ciclo, in una transazione propria: sono identiche per tutti gli
+#' snapshot, quindi ripeterne la lettura per ogni mese sarebbe lavoro
+#' inutile.
+#'
+#' @details
+#' Senza transazione esterna ogni snapshot è ingerito nella propria
+#' transazione: un errore su uno snapshot viene segnalato, le sue scritture
+#' vengono annullate e il ciclo prosegue con gli snapshot successivi.
+#'
+#' Se `con` ha già una transazione aperta, tutte le scritture vi
+#' partecipano. In questo caso il primo errore interrompe il ciclo e viene
+#' propagato, perché le scritture parziali di uno snapshot non possono
+#' essere annullate singolarmente: il ROLLBACK spetta al chiamante.
 #'
 #' @param zip_dir Directory contenente gli archivi.
 #' @param snapshots Vettore opzionale di `snapshot_id` da ingerire. Se
@@ -699,17 +779,32 @@ oja_ingest_snapshot <- function(
 #' @param overwrite Logico. Inoltrato a [oja_ingest_snapshot()].
 #' @param dim_dir Directory che contiene i tre CSV `dim_table` globali.
 #'   Default: `zip_dir`. Con `NULL` la ricarica viene saltata.
-#' @param path Percorso del file DuckDB. Default: [oja_db_path()].
+#' @param path Percorso del file DuckDB o del catalogo DuckLake. Default:
+#'   [oja_db_path()]. Ignorato se `con` non è `NULL`.
+#' @param con Connessione in scrittura, opzionale, per esempio aperta con
+#'   [oja_connect()] su un catalogo DuckLake. Quando fornita la funzione non
+#'   apre né chiude connessioni: al termine la connessione resta aperta.
 #'
 #' @return Invisibilmente una `data.frame` con un riepilogo per ogni snapshot
 #'   processato.
 #' @export
+#' @examples
+#' \dontrun{
+#'   # Database predefinito (oja_db_path())
+#'   oja_ingest_dirs("~/Documents/funzioni/shared_data/oja/incoming")
+#'
+#'   # Connessione esterna allo schema oja di un lago DuckLake
+#'   con <- oja_connect("ducklake:sqlite:/percorso/lake.sqlite", read_only = FALSE)
+#'   oja_ingest_dirs("~/Documents/funzioni/shared_data/oja/incoming", con = con)
+#'   oja_disconnect(con)
+#' }
 oja_ingest_dirs <- function(
   zip_dir,
   snapshots = NULL,
   overwrite = FALSE,
   dim_dir = zip_dir,
-  path = oja_db_path()
+  path = oja_db_path(),
+  con = NULL
 ) {
   zips <- list.files(zip_dir, pattern = "_postings\\.zip$", full.names = FALSE)
   ids <- sub("_postings\\.zip$", "", zips)
@@ -736,12 +831,15 @@ oja_ingest_dirs <- function(
     return(invisible(.empty_summary()))
   }
 
-  con <- oja_connect(path = path, read_only = FALSE)
-  on.exit(oja_disconnect(con), add = TRUE)
+  if (is.null(con)) {
+    con <- oja_connect(path = path, read_only = FALSE)
+    on.exit(oja_disconnect(con), add = TRUE)
+  }
   oja_init_db(con = con)
+  in_outer_txn <- .oja_in_transaction(con)
 
   if (!is.null(dim_dir)) {
-    .load_global_dims(con, dim_dir)
+    .oja_with_transaction(con, .load_global_dims(con, dim_dir))
   }
 
   rows <- lapply(ids, function(id) {
@@ -754,6 +852,12 @@ oja_ingest_dirs <- function(
         con = con
       ),
       error = function(e) {
+        if (in_outer_txn) {
+          cli::cli_abort(
+            "Ingestione dello snapshot {.val {id}} interrotta nella transazione del chiamante.",
+            parent = e
+          )
+        }
         cli::cli_alert_danger("Snapshot {.val {id}}: {conditionMessage(e)}")
         list(
           snapshot_id = id,

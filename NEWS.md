@@ -1,3 +1,59 @@
+# itaposts 0.4.0
+
+## Backend DuckLake
+
+* `oja_db_path()` restituisce il valore della variabile d'ambiente
+  `ITAPOSTS_DB`, se valorizzata: un file DuckDB oppure un catalogo DuckLake
+  con prefisso `ducklake:`. Senza `ITAPOSTS_DB` il percorso resta
+  `<SHARED_DATA_DIR>/oja/itposts.duckdb`.
+* `oja_connect()` accetta un percorso `ducklake:` (es.
+  `ducklake:sqlite:/percorso/lake.sqlite`): apre DuckDB in memoria, carica
+  le estensioni `ducklake` e `sqlite`, collega il catalogo come `lake`
+  (`READ_ONLY` con `read_only = TRUE`) e rende corrente lo schema
+  `lake.oja`, modificabile con l'opzione `itaposts.schema`. Le query con
+  nomi di tabella non qualificati, comprese quelle di `oja_postings()`,
+  `oja_skills()`, `oja_skill_dim()`, `oja_snapshots()` e
+  `oja_normalised()`, restano invariate. Il catalogo e lo schema devono
+  esistere: un catalogo SQLite assente produce un errore senza creare file.
+* `oja_disconnect()` scollega il catalogo DuckLake prima di chiudere la
+  connessione.
+* `oja_init_db()` crea le tabelle senza PRIMARY KEY quando il database
+  corrente è un catalogo DuckLake, che non supporta vincoli di chiave. Su
+  DuckDB il DDL è invariato.
+* `oja_ingest_dirs()` e `oja_sync()` hanno il nuovo argomento `con`: con una
+  connessione fornita dal chiamante, per esempio allo schema `oja` di un
+  lago DuckLake, le funzioni non aprono né chiudono connessioni. Se la
+  connessione ha già una transazione aperta, l'ingestione vi partecipa senza
+  COMMIT né ROLLBACK e `oja_ingest_dirs()` propaga il primo errore invece di
+  passare allo snapshot successivo.
+* Su DuckLake, senza transazione esterna, i dati di ogni snapshot OJA
+  ingerito vengono scritti con un solo commit; un DDL già applicato non crea
+  snapshot del catalogo.
+
+## Ingestione
+
+* L'UPSERT delle dimensioni derivate dalle postings e l'inserimento in
+  `fact_skills` non usano più `INSERT ... ON CONFLICT DO NOTHING`, che
+  richiede una PRIMARY KEY, ma un anti-join con deduplica esplicita per
+  chiave. A parità di chiave resta la prima riga in ordine di input, cioè
+  quella del posting con `grab_date` più recente, come in precedenza: su
+  DuckDB il contenuto delle tabelle non cambia.
+* La validazione prima del COMMIT verifica unicità e assenza di valori nulli
+  nelle chiavi di tutte le tabelle (fatti limitati allo snapshot ingerito,
+  dimensioni e `dim_snapshot` per intero), oltre all'integrità referenziale
+  skill → posting.
+* Correzione: con `overwrite = TRUE` i DELETE dello snapshot esistente
+  avvenivano prima dell'apertura della transazione, quindi un errore
+  successivo lasciava il database senza lo snapshot. Rimozione e
+  reinserimento stanno ora nella stessa transazione e un errore conserva lo
+  snapshot precedente.
+* La ricarica delle dimensioni globali eseguita da `oja_ingest_dirs()` prima
+  del ciclo avviene in una transazione: un errore non lascia le dimensioni
+  vuote.
+* `oja_sync()` apre il database per leggere gli snapshot presenti solo con
+  `ingest = TRUE`; un database esistente ma privo di `dim_snapshot` viene
+  trattato come vuoto invece di produrre un errore.
+
 # itaposts 0.3.0
 
 ## Migrazione a `data_v2` **BREAKING**
@@ -46,6 +102,18 @@ regione ITC4, 42 snapshot mensili (`ITC4_2023_1`..`ITC4_2026_6`):
 3.332.448 postings e 31.143.630 righe di skill complessive, file DuckDB
 2,1 GB su disco. Sostituisce integralmente lo stato precedente (snapshot
 singolo `ITC4_2026_2`, 89mila postings / 880mila skill, DB 67 MB).
+
+Validazione aggiuntiva su un'estrazione provinciale reale (Monza e della
+Brianza, `idprovince = 'ITC4D'`, gennaio 2024 – giugno 2026, 156.321
+annunci): confrontando l'estrazione con l'equivalente prodotta dal vecchio
+schema `data_v1` si è verificato che le righe duplicate per `general_id`
+presenti nell'estrazione storica (24.414 gruppi su 85.471 annunci distinti)
+non derivavano mai da codici CP2021 o ESCO multipli sullo stesso annuncio,
+ma da ri-acquisizioni non deduplicate (99,3% dei casi, righe identiche) e
+da un singolo codice ESCO (`3323.2`) con etichetta incoerente nel vecchio
+feed del fornitore (0,7% dei casi). La deduplica per
+`(snapshot_id, general_id)` di `fact_postings` (invariata dalla 0.1.0) non
+comporta quindi perdita di informazione di classificazione.
 
 ## Aggiornamento tassonomia ESCO del fornitore (v01.01 → v01.02.00)
 

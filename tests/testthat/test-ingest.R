@@ -1,165 +1,453 @@
-test_that("oja_ingest_snapshot popola fact_postings senza duplicati", {
-  fx <- build_fixtures()
-  on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
-  db <- tempfile(fileext = ".duckdb")
-  on.exit(unlink(c(db, paste0(db, ".wal"))), add = TRUE)
+# I test di ingestione girano su entrambi i backend: file DuckDB temporaneo e
+# lago DuckLake temporaneo (saltati se le estensioni non si caricano).
 
-  res <- oja_ingest_snapshot(
-    zip_dir = fx$zip_dir,
-    snapshot_id = fx$snapshot_id,
-    path = db
-  )
-  expect_equal(res$n_postings, fx$n_postings_unique)
+for (backend in .oja_backends) {
+  # 1. Comportamento di base ---------------------------------------------------
 
-  con <- oja_connect(db)
-  on.exit(oja_disconnect(con), add = TRUE)
+  test_that(
+    sprintf(
+      "oja_ingest_snapshot popola fact_postings senza duplicati [%s]",
+      backend
+    ),
+    {
+      fx <- build_fixtures()
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
 
-  q <- DBI::dbGetQuery(
-    con,
-    "SELECT COUNT(*) AS n, COUNT(DISTINCT general_id) AS d
-       FROM fact_postings WHERE snapshot_id = ?",
-    params = list(fx$snapshot_id)
-  )
-  expect_equal(q$n, q$d)
-  expect_equal(q$n, fx$n_postings_unique)
-})
+      res <- oja_ingest_snapshot(
+        zip_dir = fx$zip_dir,
+        snapshot_id = fx$snapshot_id,
+        path = path
+      )
+      expect_equal(res$n_postings, fx$n_postings_unique)
 
-test_that("le skills referenziano postings esistenti", {
-  fx <- build_fixtures()
-  on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
-  db <- tempfile(fileext = ".duckdb")
-  on.exit(unlink(c(db, paste0(db, ".wal"))), add = TRUE)
+      con <- oja_connect(path)
+      on.exit(oja_disconnect(con), add = TRUE)
 
-  oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = db)
-
-  con <- oja_connect(db)
-  on.exit(oja_disconnect(con), add = TRUE)
-
-  orphans <- DBI::dbGetQuery(
-    con,
-    "SELECT COUNT(*) AS n FROM fact_skills s
-       WHERE NOT EXISTS (
-         SELECT 1 FROM fact_postings p
-          WHERE p.snapshot_id = s.snapshot_id
-            AND p.general_id  = s.general_id
-       )"
-  )
-  expect_equal(orphans$n, 0L)
-})
-
-test_that("re-ingest dello stesso snapshot fallisce senza overwrite", {
-  fx <- build_fixtures()
-  on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
-  db <- tempfile(fileext = ".duckdb")
-  on.exit(unlink(c(db, paste0(db, ".wal"))), add = TRUE)
-
-  oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = db)
-
-  expect_error(
-    oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = db),
-    regexp = "gia' presente"
-  )
-
-  res <- oja_ingest_snapshot(
-    fx$zip_dir,
-    fx$snapshot_id,
-    path = db,
-    overwrite = TRUE
-  )
-  expect_equal(res$n_postings, fx$n_postings_unique)
-
-  con <- oja_connect(db)
-  on.exit(oja_disconnect(con), add = TRUE)
-  n_snap <- DBI::dbGetQuery(
-    con,
-    "SELECT COUNT(*) AS n FROM dim_snapshot WHERE snapshot_id = ?",
-    params = list(fx$snapshot_id)
-  )$n
-  expect_equal(n_snap, 1L)
-})
-
-test_that("le dimensioni sono popolate e univoche", {
-  fx <- build_fixtures()
-  on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
-  db <- tempfile(fileext = ".duckdb")
-  on.exit(unlink(c(db, paste0(db, ".wal"))), add = TRUE)
-
-  oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = db)
-
-  con <- oja_connect(db)
-  on.exit(oja_disconnect(con), add = TRUE)
-
-  # Dimensioni derivate dalle postings (UPSERT incrementale).
-  expect_gt(
-    DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM dim_geography")$n,
-    0
-  )
-  # Dimensioni globali ricaricate dai CSV dim_table.
-  for (tbl in c("dim_cp2021", "dim_esco_occupation", "dim_esco_skill")) {
-    expect_gt(
-      DBI::dbGetQuery(
+      q <- DBI::dbGetQuery(
         con,
-        sprintf("SELECT COUNT(*) AS n FROM %s", tbl)
-      )$n,
+        "SELECT COUNT(*) AS n, COUNT(DISTINCT general_id) AS d
+           FROM fact_postings WHERE snapshot_id = ?",
+        params = list(fx$snapshot_id)
+      )
+      expect_equal(q$n, q$d)
+      expect_equal(q$n, fx$n_postings_unique)
+    }
+  )
+
+  test_that(
+    sprintf("le skills referenziano postings esistenti [%s]", backend),
+    {
+      fx <- build_fixtures()
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+
+      oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = path)
+
+      con <- oja_connect(path)
+      on.exit(oja_disconnect(con), add = TRUE)
+
+      orphans <- DBI::dbGetQuery(
+        con,
+        "SELECT COUNT(*) AS n FROM fact_skills s
+         WHERE NOT EXISTS (
+           SELECT 1 FROM fact_postings p
+            WHERE p.snapshot_id = s.snapshot_id
+              AND p.general_id  = s.general_id
+         )"
+      )
+      expect_equal(orphans$n, 0L)
+    }
+  )
+
+  test_that(
+    sprintf(
+      "re-ingest dello stesso snapshot fallisce senza overwrite [%s]",
+      backend
+    ),
+    {
+      fx <- build_fixtures()
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+
+      oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = path)
+
+      expect_error(
+        oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = path),
+        regexp = "gia' presente"
+      )
+
+      res <- oja_ingest_snapshot(
+        fx$zip_dir,
+        fx$snapshot_id,
+        path = path,
+        overwrite = TRUE
+      )
+      expect_equal(res$n_postings, fx$n_postings_unique)
+
+      con <- oja_connect(path)
+      on.exit(oja_disconnect(con), add = TRUE)
+      n_snap <- DBI::dbGetQuery(
+        con,
+        "SELECT COUNT(*) AS n FROM dim_snapshot WHERE snapshot_id = ?",
+        params = list(fx$snapshot_id)
+      )$n
+      expect_equal(n_snap, 1L)
+      expect_equal(
+        DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM fact_skills")$n,
+        fx$n_skills_total
+      )
+    }
+  )
+
+  test_that(sprintf("le dimensioni sono popolate e univoche [%s]", backend), {
+    fx <- build_fixtures()
+    on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+    path <- local_temp_store(backend)
+
+    oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = path)
+
+    con <- oja_connect(path)
+    on.exit(oja_disconnect(con), add = TRUE)
+
+    # Dimensioni derivate dalle postings (UPSERT incrementale).
+    expect_gt(
+      DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM dim_geography")$n,
       0
     )
-  }
-  # Univocita' su PK
-  expect_equal(
-    DBI::dbGetQuery(
+    # Dimensioni globali ricaricate dai CSV dim_table.
+    for (tbl in c("dim_cp2021", "dim_esco_occupation", "dim_esco_skill")) {
+      expect_gt(
+        DBI::dbGetQuery(
+          con,
+          sprintf("SELECT COUNT(*) AS n FROM %s", tbl)
+        )$n,
+        0
+      )
+    }
+    # Univocita' su PK
+    expect_equal(
+      DBI::dbGetQuery(
+        con,
+        "SELECT COUNT(*) AS n, COUNT(DISTINCT idescoskill_level_3) AS d FROM dim_esco_skill"
+      ) |>
+        (\(x) x$n - x$d)(),
+      0
+    )
+    # Ogni chiave esterna dei fatti deve trovare corrispondenza in dimensione.
+    orphan_fk <- DBI::dbGetQuery(
       con,
-      "SELECT COUNT(*) AS n, COUNT(DISTINCT idescoskill_level_3) AS d FROM dim_esco_skill"
-    ) |>
-      (\(x) x$n - x$d)(),
-    0
-  )
-  # Ogni chiave esterna dei fatti deve trovare corrispondenza in dimensione.
-  orphan_fk <- DBI::dbGetQuery(
-    con,
-    "SELECT
-       (SELECT COUNT(*) FROM fact_postings f
-         WHERE NOT EXISTS (SELECT 1 FROM dim_cp2021 d
-                            WHERE d.cp2021_id_level_5 = f.cp2021_id_level_5)) AS cp,
-       (SELECT COUNT(*) FROM fact_postings f
-         WHERE NOT EXISTS (SELECT 1 FROM dim_esco_occupation d
-                            WHERE d.idesco_level_5 = f.idesco_level_5)) AS occ,
-       (SELECT COUNT(*) FROM fact_skills s
-         WHERE NOT EXISTS (SELECT 1 FROM dim_esco_skill d
-                            WHERE d.idescoskill_level_3 = s.idescoskill_level_3)) AS skl"
-  )
-  expect_equal(orphan_fk$cp, 0L)
-  expect_equal(orphan_fk$occ, 0L)
-  expect_equal(orphan_fk$skl, 0L)
-})
+      "SELECT
+         (SELECT COUNT(*) FROM fact_postings f
+           WHERE NOT EXISTS (SELECT 1 FROM dim_cp2021 d
+                              WHERE d.cp2021_id_level_5 = f.cp2021_id_level_5)) AS cp,
+         (SELECT COUNT(*) FROM fact_postings f
+           WHERE NOT EXISTS (SELECT 1 FROM dim_esco_occupation d
+                              WHERE d.idesco_level_5 = f.idesco_level_5)) AS occ,
+         (SELECT COUNT(*) FROM fact_skills s
+           WHERE NOT EXISTS (SELECT 1 FROM dim_esco_skill d
+                              WHERE d.idescoskill_level_3 = s.idescoskill_level_3)) AS skl"
+    )
+    expect_equal(orphan_fk$cp, 0L)
+    expect_equal(orphan_fk$occ, 0L)
+    expect_equal(orphan_fk$skl, 0L)
+  })
 
-test_that("i CSV dim_table sono obbligatori quando dim_dir non e' NULL", {
-  fx <- build_fixtures()
+  test_that(
+    sprintf(
+      "i CSV dim_table sono obbligatori quando dim_dir non e' NULL [%s]",
+      backend
+    ),
+    {
+      fx <- build_fixtures()
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+
+      unlink(fx$dim_files[["dim_occ_esco"]])
+
+      expect_error(
+        oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = path),
+        regexp = "dim_table"
+      )
+
+      # Con dim_dir = NULL l'ingest procede: le dimensioni globali restano vuote.
+      res <- oja_ingest_snapshot(
+        fx$zip_dir,
+        fx$snapshot_id,
+        path = path,
+        dim_dir = NULL
+      )
+      expect_equal(res$n_postings, fx$n_postings_unique)
+
+      con <- oja_connect(path)
+      on.exit(oja_disconnect(con), add = TRUE)
+      expect_equal(
+        DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM dim_esco_occupation")$n,
+        0L
+      )
+    }
+  )
+
+  # 2. Upsert portabile e idempotenza -------------------------------------------
+
+  test_that(
+    sprintf(
+      ".upsert_dim è idempotente e tiene una riga per chiave [%s]",
+      backend
+    ),
+    {
+      path <- local_temp_store(backend)
+      con <- oja_connect(path, read_only = FALSE)
+      on.exit(oja_disconnect(con), add = TRUE)
+      oja_init_db(con = con)
+
+      geo <- data.table::data.table(
+        idcity = c("001", "001", "002", NA),
+        city = c("Pavia", "Pavia (PV)", "Vigevano", "Senza codice"),
+        idprovince = "ITC48",
+        province = "Pavia",
+        idregion = "ITC4",
+        region = "Lombardia",
+        idmacro_region = "ITC",
+        macro_region = "Nord-Ovest",
+        idcountry = "IT",
+        country = "ITALIA"
+      )
+      expect_equal(.upsert_dim(con, "dim_geography", geo, "idcity"), 2)
+      expect_equal(.upsert_dim(con, "dim_geography", geo, "idcity"), 0)
+      # L'input non viene modificato per riferimento.
+      expect_false("stg_ord__" %in% names(geo))
+
+      out <- DBI::dbGetQuery(
+        con,
+        "SELECT idcity, city FROM dim_geography ORDER BY idcity"
+      )
+      expect_identical(out$idcity, c("001", "002"))
+      # A parità di chiave vince la prima riga in ordine di input.
+      expect_identical(out$city, c("Pavia", "Vigevano"))
+    }
+  )
+
+  test_that(
+    sprintf(
+      "lo streaming delle skill non duplica righe già presenti [%s]",
+      backend
+    ),
+    {
+      fx <- build_fixtures(n_postings = 10L, n_skills_per = 3L)
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+      oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = path)
+
+      con <- oja_connect(path, read_only = FALSE)
+      on.exit(oja_disconnect(con), add = TRUE)
+      expect_identical(.stream_skills(con, fx$skills, fx$snapshot_id), 0L)
+      expect_equal(
+        DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM fact_skills")$n,
+        fx$n_skills_total
+      )
+    }
+  )
+
+  test_that(
+    sprintf(
+      "due snapshot con dimensioni comuni lasciano chiavi univoche [%s]",
+      backend
+    ),
+    {
+      path <- local_temp_store(backend)
+      for (sid in c("TEST_2026_1", "TEST_2026_2")) {
+        fx <- build_fixtures(snapshot_id = sid)
+        on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+        oja_ingest_snapshot(fx$zip_dir, sid, path = path)
+      }
+
+      con <- oja_connect(path)
+      on.exit(oja_disconnect(con), add = TRUE)
+
+      viol <- .oja_key_violations(con, "TEST_2026_2")
+      expect_setequal(viol$table, names(.oja_keys()))
+      expect_true(all(viol$n_duplicate == 0L))
+      expect_true(all(viol$n_null == 0L))
+
+      # Le fixture assegnano nomi di città diversi allo stesso idcity.
+      geo <- DBI::dbGetQuery(
+        con,
+        "SELECT COUNT(*) AS n, COUNT(DISTINCT idcity) AS d FROM dim_geography"
+      )
+      expect_equal(geo$n, geo$d)
+      expect_equal(
+        DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM dim_snapshot")$n,
+        2
+      )
+    }
+  )
+
+  # 3. Transazioni ----------------------------------------------------------------
+
+  test_that(
+    sprintf("un errore dopo i DELETE lascia intatto lo snapshot [%s]", backend),
+    {
+      fx <- build_fixtures()
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+      oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = path)
+
+      read_state <- function() {
+        con <- oja_connect(path)
+        on.exit(oja_disconnect(con), add = TRUE)
+        DBI::dbGetQuery(
+          con,
+          "SELECT
+             (SELECT COUNT(*) FROM fact_postings) AS n_post,
+             (SELECT COUNT(*) FROM fact_skills)   AS n_skill,
+             (SELECT COUNT(*) FROM dim_snapshot)  AS n_snap,
+             (SELECT MAX(ingested_at) FROM dim_snapshot) AS ingested_at"
+        )
+      }
+      before <- read_state()
+
+      local_mocked_bindings(
+        .validate_snapshot = function(con, snapshot_id) {
+          cli::cli_abort("Validazione simulata fallita.")
+        }
+      )
+      expect_error(
+        oja_ingest_snapshot(
+          fx$zip_dir,
+          fx$snapshot_id,
+          overwrite = TRUE,
+          path = path
+        ),
+        "Validazione simulata"
+      )
+      expect_identical(read_state(), before)
+    }
+  )
+
+  test_that(
+    sprintf(
+      "oja_ingest_dirs con connessione esterna la lascia aperta [%s]",
+      backend
+    ),
+    {
+      fx <- build_fixtures()
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+      con <- oja_connect(path, read_only = FALSE)
+      on.exit(oja_disconnect(con), add = TRUE)
+
+      res <- oja_ingest_dirs(fx$zip_dir, con = con)
+      expect_identical(res$snapshot_id, fx$snapshot_id)
+      expect_equal(res$n_postings, fx$n_postings_unique)
+
+      expect_true(DBI::dbIsValid(con))
+      expect_equal(
+        DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM fact_postings")$n,
+        fx$n_postings_unique
+      )
+      if (identical(backend, "ducklake")) {
+        expect_identical(
+          DBI::dbGetQuery(con, "SELECT current_schema() AS s")$s,
+          "oja"
+        )
+      }
+    }
+  )
+
+  test_that(
+    sprintf(
+      "con una transazione aperta l'ingestione vi partecipa [%s]",
+      backend
+    ),
+    {
+      fx <- build_fixtures()
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+      con <- oja_connect(path, read_only = FALSE)
+      on.exit(oja_disconnect(con), add = TRUE)
+      oja_init_db(con = con)
+
+      # Nessun COMMIT interno: il ROLLBACK del chiamante annulla tutto.
+      DBI::dbExecute(con, "BEGIN TRANSACTION")
+      oja_ingest_dirs(fx$zip_dir, con = con)
+      expect_true(.oja_in_transaction(con))
+      DBI::dbExecute(con, "ROLLBACK")
+      expect_equal(
+        DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM dim_snapshot")$n,
+        0
+      )
+
+      # Un errore nella transazione del chiamante non viene assorbito.
+      local_mocked_bindings(
+        .validate_snapshot = function(con, snapshot_id) {
+          cli::cli_abort("Validazione simulata fallita.")
+        }
+      )
+      DBI::dbExecute(con, "BEGIN TRANSACTION")
+      expect_error(oja_ingest_dirs(fx$zip_dir, con = con), "transazione")
+      DBI::dbExecute(con, "ROLLBACK")
+      expect_equal(
+        DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM fact_postings")$n,
+        0
+      )
+    }
+  )
+
+  # 4. Lettura ---------------------------------------------------------------------
+
+  test_that(
+    sprintf("le funzioni di lettura usano nomi non qualificati [%s]", backend),
+    {
+      fx <- build_fixtures()
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+      oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = path)
+
+      con <- oja_connect(path)
+      on.exit(oja_disconnect(con), add = TRUE)
+
+      n_post <- dplyr::collect(
+        dplyr::count(oja_postings(con, snapshots = fx$snapshot_id))
+      )$n
+      expect_equal(n_post, fx$n_postings_unique)
+      expect_equal(nrow(oja_snapshots(con)), 1L)
+      expect_gt(dplyr::collect(dplyr::count(oja_skill_dim(con)))$n, 0)
+
+      # Nessuna moltiplicazione di righe dai join con le dimensioni.
+      ojv <- oja_normalised(con, snapshots = fx$snapshot_id, verbose = FALSE)
+      expect_equal(nrow(ojv$postings), fx$n_postings_unique)
+      expect_equal(nrow(ojv$skills), fx$n_skills_total)
+    }
+  )
+}
+
+# 5. Validazione e argomenti ---------------------------------------------------------
+
+test_that("la validazione rileva chiavi duplicate su DuckLake", {
+  fx <- build_fixtures(n_postings = 10L, n_skills_per = 2L)
   on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
-  db <- tempfile(fileext = ".duckdb")
-  on.exit(unlink(c(db, paste0(db, ".wal"))), add = TRUE)
+  lake <- local_temp_lake()
+  oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = lake)
 
-  unlink(fx$dim_files[["dim_occ_esco"]])
-
-  expect_error(
-    oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = db),
-    regexp = "dim_table"
-  )
-
-  # Con dim_dir = NULL l'ingest procede: le dimensioni globali restano vuote.
-  res <- oja_ingest_snapshot(
-    fx$zip_dir,
-    fx$snapshot_id,
-    path = db,
-    dim_dir = NULL
-  )
-  expect_equal(res$n_postings, fx$n_postings_unique)
-
-  con <- oja_connect(db)
+  con <- oja_connect(lake, read_only = FALSE)
   on.exit(oja_disconnect(con), add = TRUE)
-  expect_equal(
-    DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM dim_esco_occupation")$n,
-    0L
+  expect_no_error(.validate_snapshot(con, fx$snapshot_id))
+
+  # Senza PRIMARY KEY un duplicato entra nella tabella: lo intercetta la
+  # validazione.
+  DBI::dbExecute(
+    con,
+    "INSERT INTO dim_contract SELECT * FROM dim_contract LIMIT 1"
   )
+  expect_error(.validate_snapshot(con, fx$snapshot_id), "dim_contract")
+
+  DBI::dbExecute(con, "DELETE FROM dim_contract")
+  DBI::dbExecute(
+    con,
+    "INSERT INTO fact_skills SELECT * FROM fact_skills LIMIT 1"
+  )
+  expect_error(.validate_snapshot(con, fx$snapshot_id), "fact_skills")
 })
 
 test_that("snapshot_id parsing rifiuta formati invalidi", {

@@ -1,7 +1,7 @@
 Package: itaposts
 Type: Package
 Title: Importazione e Normalizzazione di OJA Italiani in DuckDB
-Version: 0.3.0
+Version: 0.4.0
 Authors@R: person(
     given = "Giampaolo",
     family = "Montaletti",
@@ -13,7 +13,8 @@ Description: Importa, normalizza e indicizza in DuckDB i dati OJA
     italiano (NUTS-2, ad es. ITC4 Lombardia). Espone funzioni per
     l'ingestione di snapshot mensili da archivi zip, una API di lettura
     basata su 'dplyr' e uno shim di compatibilita' che restituisce la
-    forma tabellare attesa dal pacchetto 'skillviz'.
+    forma tabellare attesa dal pacchetto 'skillviz'. Come archivio
+    supporta un file 'DuckDB' oppure uno schema di un catalogo 'DuckLake'.
 License: MIT + file LICENSE
 Encoding: UTF-8
 LazyData: false

@@ -158,3 +158,79 @@ test_that("oja_sync salta gli snapshot gia' presenti in dim_snapshot", {
   expect_false(res$downloaded)
   expect_false(res$ingested)
 })
+
+for (backend in .oja_backends) {
+  test_that(
+    sprintf(
+      "oja_sync scrive nella connessione fornita e non la chiude [%s]",
+      backend
+    ),
+    {
+      fx <- build_fixtures(snapshot_id = "TEST_2027_2")
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+      con <- oja_connect(path, read_only = FALSE)
+      on.exit(oja_disconnect(con), add = TRUE)
+
+      zip_names <- paste0(
+        "TEST_2027_2_",
+        c("postings", "postings_raw", "skills"),
+        ".zip"
+      )
+      cfg <- list(
+        host = "h",
+        port = 22L,
+        user = "u",
+        password = "p",
+        remote_dir = "/x",
+        dim_dir = "/data_v2/dim_table",
+        local_dir = fx$zip_dir
+      )
+      fake_lister <- function(config, region_code) {
+        data.frame(
+          name = zip_names,
+          size_bytes = file.info(file.path(fx$zip_dir, zip_names))$size,
+          snapshot_id = "TEST_2027_2",
+          kind = c("postings", "postings_raw", "skills"),
+          stringsAsFactors = FALSE
+        )
+      }
+      # Gli archivi sono gia' in locale con la dimensione del remoto; i CSV
+      # dimensionali vengono copiati dalla fixture invece che scaricati.
+      fake_dl <- function(remote_name, local_path, config) {
+        if (remote_name %in% .oja_dim_files) {
+          file.copy(
+            file.path(fx$zip_dir, remote_name),
+            local_path,
+            overwrite = TRUE
+          )
+          return(invisible(local_path))
+        }
+        stop("il downloader non doveva essere invocato per gli archivi")
+      }
+
+      res <- oja_sync(
+        region_code = "TEST",
+        config = cfg,
+        lister = fake_lister,
+        downloader = fake_dl,
+        con = con
+      )
+      expect_true(res$ingested)
+      expect_equal(res$n_postings, fx$n_postings_unique)
+      expect_true(DBI::dbIsValid(con))
+      expect_identical(oja_snapshots(con)$snapshot_id, "TEST_2027_2")
+
+      # Seconda esecuzione: lo snapshot risulta presente nella connessione.
+      res2 <- oja_sync(
+        region_code = "TEST",
+        config = cfg,
+        lister = fake_lister,
+        downloader = fake_dl,
+        con = con
+      )
+      expect_false(res2$ingested)
+      expect_true(DBI::dbIsValid(con))
+    }
+  )
+}

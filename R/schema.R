@@ -1,10 +1,13 @@
 # 1. DDL del database OJA -----------------------------------------------------
 
 # Lo schema completo: due tabelle dei fatti, undici dimensioni, una di
-# metadata. Ogni statement e' idempotente (CREATE TABLE IF NOT EXISTS).
+# metadata. Ogni statement è idempotente (CREATE TABLE IF NOT EXISTS).
+# Con `primary_keys = FALSE` le clausole PRIMARY KEY vengono rimosse: DuckLake
+# non supporta vincoli di chiave e l'unicità delle chiavi dichiarate in
+# .oja_keys() è verificata da .validate_snapshot() prima del COMMIT.
 
-.oja_ddl <- function() {
-  c(
+.oja_ddl <- function(primary_keys = TRUE) {
+  ddl <- c(
     # 1.1 Dimensioni derivate dalle postings (UPSERT incrementale)
     dim_geography = "
       CREATE TABLE IF NOT EXISTS dim_geography (
@@ -176,6 +179,33 @@
       )
     "
   )
+  if (!primary_keys) {
+    ddl <- gsub(",\\s*PRIMARY KEY\\s*\\([^)]*\\)", "", ddl)
+    ddl <- gsub("\\s+PRIMARY KEY", "", ddl)
+  }
+  ddl
+}
+
+# Chiavi logiche di ogni tabella. Coincidono con le PRIMARY KEY del DDL DuckDB
+# e ne fanno le veci su DuckLake: le usano l'upsert delle dimensioni e la
+# validazione di unicità.
+.oja_keys <- function() {
+  list(
+    dim_geography = "idcity",
+    dim_contract = "idcontract",
+    dim_education = "ideducational_level",
+    dim_sector = "idsector",
+    dim_experience = "idexperience",
+    dim_working_hours = "idworking_hours",
+    dim_salary = "idsalary",
+    dim_source = "source",
+    dim_cp2021 = "cp2021_id_level_5",
+    dim_esco_occupation = "idesco_level_5",
+    dim_esco_skill = "idescoskill_level_3",
+    dim_snapshot = "snapshot_id",
+    fact_postings = c("snapshot_id", "general_id"),
+    fact_skills = c("snapshot_id", "general_id", "idescoskill_level_3")
+  )
 }
 
 # 2. Inizializzazione idempotente --------------------------------------------
@@ -194,12 +224,22 @@
 #' ricaricate integralmente dai file `dim_table` a ogni ingest.
 #'
 #' Apre una connessione in scrittura sul percorso `path` e la chiude prima di
-#' restituire. Se il chiamante ha gia' una connessione in scrittura aperta puo'
-#' passarla via `con`; in tal caso non viene aperta ne' chiusa alcuna
+#' restituire. Se il chiamante ha già una connessione in scrittura aperta può
+#' passarla via `con`; in tal caso non viene aperta né chiusa alcuna
 #' connessione aggiuntiva.
 #'
-#' @param path Percorso del file DuckDB. Default: [oja_db_path()]. Ignorato se
-#'   `con` non e' `NULL`.
+#' @details
+#' Su un database DuckDB le tabelle hanno PRIMARY KEY sulle chiavi logiche.
+#' Quando il database corrente della connessione è un catalogo DuckLake
+#' (rilevato con `duckdb_databases()`), le tabelle vengono create senza
+#' PRIMARY KEY, perché DuckLake non supporta vincoli di chiave: l'unicità
+#' delle chiavi è verificata dall'ingestione prima del COMMIT. Le tabelle
+#' sono create nello schema corrente, cioè `lake.oja` per le connessioni
+#' aperte con [oja_connect()] su un percorso `ducklake:`; lo schema deve
+#' esistere.
+#'
+#' @param path Percorso del file DuckDB o del catalogo DuckLake (prefisso
+#'   `ducklake:`). Default: [oja_db_path()]. Ignorato se `con` non è `NULL`.
 #' @param con Connessione DuckDB in scrittura, opzionale. Quando fornita la
 #'   funzione si limita a eseguire il DDL.
 #'
@@ -210,11 +250,11 @@
 #'   oja_init_db()
 #' }
 oja_init_db <- function(path = oja_db_path(), con = NULL) {
-  ddl <- .oja_ddl()
   if (is.null(con)) {
     con <- oja_connect(path = path, read_only = FALSE)
     on.exit(oja_disconnect(con), add = TRUE)
   }
+  ddl <- .oja_ddl(primary_keys = !.oja_is_ducklake(con))
   for (stmt in ddl) {
     DBI::dbExecute(con, stmt)
   }

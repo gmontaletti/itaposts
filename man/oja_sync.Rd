@@ -12,7 +12,8 @@ oja_sync(
   config = oja_sftp_config(),
   path = oja_db_path(),
   lister = oja_remote_list,
-  downloader = oja_sftp_download
+  downloader = oja_sftp_download,
+  con = NULL
 )
 }
 \arguments{
@@ -26,9 +27,15 @@ oja_sync(
 
 \item{config}{Output di \code{\link[=oja_sftp_config]{oja_sftp_config()}}.}
 
-\item{path}{Percorso del file DuckDB. Default \code{\link[=oja_db_path]{oja_db_path()}}.}
+\item{path}{Percorso del file DuckDB o del catalogo DuckLake. Default
+\code{\link[=oja_db_path]{oja_db_path()}}. Ignorato se \code{con} non è \code{NULL}.}
 
 \item{lister, downloader}{Funzioni iniettabili (per i test).}
+
+\item{con}{Connessione in scrittura, opzionale, inoltrata a
+\code{\link[=oja_ingest_dirs]{oja_ingest_dirs()}}: permette di scrivere in un database già aperto dal
+chiamante, per esempio lo schema \code{oja} di un lago DuckLake. È usata
+anche per leggere gli snapshot già presenti e non viene chiusa.}
 }
 \value{
 Invisibilmente un \code{data.frame} con \code{snapshot_id}, \code{downloaded},
@@ -55,5 +62,10 @@ snapshot nuovi.
 \dontrun{
   readRenviron("~/.Renviron")
   oja_sync()
+
+  # Scrittura nello schema oja di un lago DuckLake
+  con <- oja_connect("ducklake:sqlite:/percorso/lake.sqlite", read_only = FALSE)
+  oja_sync(con = con)
+  oja_disconnect(con)
 }
 }

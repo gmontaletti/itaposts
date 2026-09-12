@@ -25,9 +25,11 @@ remotes::install_github("gmontaletti/itaposts")
 
 ### Inizializzazione del database
 
-Il file DuckDB è risolto via `Sys.getenv("SHARED_DATA_DIR",
-"~/Documents/funzioni/shared_data")` + `/oja/itposts.duckdb`. La prima
-inizializzazione crea lo schema:
+Il database è risolto da `oja_db_path()`: se la variabile d'ambiente
+`ITAPOSTS_DB` è valorizzata ne usa il valore (file DuckDB oppure catalogo
+DuckLake con prefisso `ducklake:`), altrimenti il file
+`Sys.getenv("SHARED_DATA_DIR", "~/Documents/funzioni/shared_data")` +
+`/oja/itposts.duckdb`. La prima inizializzazione crea lo schema:
 
 ``` r
 itaposts::oja_init_db()
@@ -65,6 +67,29 @@ itaposts::oja_postings(con) |>
   dplyr::count(idmacro_sector) |>
   dplyr::collect()
 ```
+
+### Backend DuckLake
+
+`oja_connect()` accetta anche un catalogo DuckLake. Con un percorso
+`ducklake:` apre DuckDB in memoria, collega il catalogo come `lake` e rende
+corrente lo schema `lake.oja` (nome modificabile con l'opzione
+`itaposts.schema`): le query con nomi di tabella non qualificati restano
+invariate.
+
+``` r
+Sys.setenv(
+  ITAPOSTS_DB = "ducklake:sqlite:~/Documents/funzioni/datalake/catalog/lake.sqlite"
+)
+con <- itaposts::oja_connect()
+itaposts::oja_snapshots(con)
+itaposts::oja_disconnect(con)
+```
+
+Il catalogo e lo schema devono esistere e le estensioni DuckDB `ducklake` e
+`sqlite` devono essere installate. Su DuckLake le tabelle non hanno PRIMARY
+KEY: l'ingestione deduplica per chiave e verifica l'unicità delle chiavi
+prima del COMMIT. `oja_ingest_dirs()` e `oja_sync()` accettano una
+connessione esterna (`con`), che resta aperta al termine.
 
 ### Compatibilità con skillviz
 
@@ -109,7 +134,7 @@ citation("itaposts")
 Riferimento bibliografico:
 
 > Montaletti, G. (2026). *itaposts: Importazione e Normalizzazione di OJA
-> Italiani in DuckDB*. Versione 0.3.0.
+> Italiani in DuckDB*. Versione 0.4.0.
 > <https://github.com/gmontaletti/itaposts>
 
 ## Licenza

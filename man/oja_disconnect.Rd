@@ -2,7 +2,7 @@
 % Please edit documentation in R/connection.R
 \name{oja_disconnect}
 \alias{oja_disconnect}
-\title{Chiude una connessione DuckDB OJA}
+\title{Chiude una connessione OJA}
 \usage{
 oja_disconnect(con)
 }
@@ -13,6 +13,12 @@ oja_disconnect(con)
 Invisibilmente \code{TRUE}.
 }
 \description{
-Equivalente a \code{DBI::dbDisconnect(con, shutdown = TRUE)}. Restituisce
-invisibilmente \code{TRUE}.
+Chiude la connessione aperta da \code{\link[=oja_connect]{oja_connect()}}. Per le connessioni a un
+catalogo DuckLake scollega prima il catalogo (\verb{DETACH lake}), così il
+catalogo viene rilasciato subito e non alla garbage collection.
+Restituisce invisibilmente \code{TRUE}.
+}
+\examples{
+con <- oja_connect(path = ":memory:", read_only = FALSE)
+oja_disconnect(con)
 }

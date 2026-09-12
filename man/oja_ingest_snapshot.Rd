@@ -2,7 +2,7 @@
 % Please edit documentation in R/ingest.R
 \name{oja_ingest_snapshot}
 \alias{oja_ingest_snapshot}
-\title{Ingerisce un singolo snapshot OJA nel database DuckDB}
+\title{Ingerisce un singolo snapshot OJA nel database}
 \usage{
 oja_ingest_snapshot(
   zip_dir,
@@ -27,10 +27,11 @@ Default: \code{zip_dir}. Con \code{NULL} la ricarica delle dimensioni globali vi
 saltata (utile quando il chiamante l'ha gia' eseguita, come fa
 \code{\link[=oja_ingest_dirs]{oja_ingest_dirs()}}).}
 
-\item{path}{Percorso del file DuckDB. Default: \code{\link[=oja_db_path]{oja_db_path()}}.}
+\item{path}{Percorso del file DuckDB o del catalogo DuckLake. Default:
+\code{\link[=oja_db_path]{oja_db_path()}}. Ignorato se \code{con} non è \code{NULL}.}
 
-\item{con}{Connessione DuckDB in scrittura, opzionale. Quando fornita la
-funzione non apre/chiude connessioni.}
+\item{con}{Connessione in scrittura, opzionale. Quando fornita la
+funzione non apre né chiude connessioni.}
 }
 \value{
 Invisibilmente una lista con \code{snapshot_id}, \code{n_postings},
@@ -40,12 +41,14 @@ Invisibilmente una lista con \code{snapshot_id}, \code{n_postings},
 Legge i tre archivi zip Lightcast (\verb{<snapshot_id>_postings.zip},
 \verb{<snapshot_id>_postings_raw.zip}, \verb{<snapshot_id>_skills.zip}) presenti in
 \code{zip_dir}, deduplica i posting su \code{general_id} mantenendo la riga con
-\verb{(year, month, day)_grab_date} piu' recente, costruisce le dimensioni
+\verb{(year, month, day)_grab_date} più recente, costruisce le dimensioni
 derivate dalle postings (UPSERT), alimenta \code{fact_postings} e — via DuckDB
 \code{read_csv_auto} — anche \code{fact_skills} senza materializzare la tabella delle
-skill (~27M righe) in R. L'intera operazione e' avvolta in una singola
-transazione con validazione di unicita' e integrita' referenziale prima
-del COMMIT.
+skill (~27M righe) in R. L'intera operazione, compresa la rimozione dello
+snapshot omonimo con \code{overwrite = TRUE}, è avvolta in una singola
+transazione con validazione di unicità delle chiavi e di integrità
+referenziale prima del COMMIT: in caso di errore il database resta
+com'era.
 }
 \details{
 Le dimensioni globali del fornitore (\code{dim_cp2021}, \code{dim_esco_occupation},
@@ -59,6 +62,18 @@ Vengono quindi ricaricate integralmente dai tre CSV globali presenti in
 Il valore \code{"Unclassifiable"} puo' comparire in \code{idesco_level_5} come
 sentinella: non corrisponde a nessuna chiave di \code{dim_esco_occupation} e i
 join in lettura restituiscono \code{NA} per le descrizioni.
+
+Il database può essere un file DuckDB o un catalogo DuckLake (percorso
+\verb{ducklake:}, vedi \code{\link[=oja_connect]{oja_connect()}}). Le tabelle DuckLake non hanno PRIMARY
+KEY: l'UPSERT delle dimensioni e l'inserimento delle skill usano un
+anti-join con deduplica esplicita per chiave (a parità di chiave vince la
+riga del posting più recente) e la validazione controlla l'unicità delle
+chiavi di tutte le tabelle. Senza transazione esterna i dati di uno
+snapshot OJA vengono scritti con un solo commit.
+
+Se \code{con} ha già una transazione aperta, la funzione vi partecipa senza
+COMMIT né ROLLBACK: la conclusione della transazione e la gestione
+dell'errore spettano al chiamante.
 }
 \examples{
 \dontrun{

@@ -78,5 +78,7 @@ utils::globalVariables(c(
   "uri",
   "source_category_analysis",
   "source_relevance",
-  "companyname"
+  "companyname",
+  "n_duplicate",
+  "n_null"
 ))

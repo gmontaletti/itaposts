@@ -2,27 +2,32 @@
 % Please edit documentation in R/connection.R
 \name{oja_db_path}
 \alias{oja_db_path}
-\title{Percorso del database DuckDB OJA condiviso}
+\title{Percorso del database OJA condiviso}
 \usage{
 oja_db_path(create_dir = TRUE)
 }
 \arguments{
-\item{create_dir}{Logico. Se \code{TRUE} (default) crea la cartella \verb{oja/} se non
-esiste. La creazione del file DuckDB stesso e' delegata a
+\item{create_dir}{Logico. Se \code{TRUE} (default) crea la cartella che
+contiene il file DuckDB se non esiste. Non ha effetto sui percorsi
+\verb{ducklake:}. La creazione del file DuckDB stesso è delegata a
 \code{\link[=oja_init_db]{oja_init_db()}} o alla prima \code{dbConnect()}.}
 }
 \value{
-Stringa con il percorso assoluto del file \code{itposts.duckdb}.
+Stringa con il percorso assoluto del file DuckDB (per default
+\verb{<SHARED_DATA_DIR>/oja/itposts.duckdb}) oppure con il percorso
+\verb{ducklake:} letto da \code{ITAPOSTS_DB}.
 }
 \description{
-Restituisce il percorso del file DuckDB centralizzato che ospita gli OJA
-normalizzati. Il percorso e' radicato nella variabile d'ambiente
-\code{SHARED_DATA_DIR} (con fallback \verb{~/Documents/funzioni/shared_data}) — la
+Restituisce il percorso del database che ospita gli OJA normalizzati. Se
+la variabile d'ambiente \code{ITAPOSTS_DB} è valorizzata, la funzione ne
+restituisce il valore: un file DuckDB oppure un catalogo DuckLake con
+prefisso \verb{ducklake:} (es.
+\verb{ducklake:sqlite:~/Documents/funzioni/datalake/catalog/lake.sqlite}).
+Altrimenti il percorso è radicato nella variabile d'ambiente
+\code{SHARED_DATA_DIR} (con fallback \verb{~/Documents/funzioni/shared_data}), la
 stessa convenzione usata dagli altri moduli dell'ecosistema (cfr.
 \code{data_pipeline/R/person_employer_links.R}).
 }
 \examples{
-\dontrun{
-  oja_db_path()
-}
+oja_db_path(create_dir = FALSE)
 }

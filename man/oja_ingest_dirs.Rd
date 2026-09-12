@@ -9,7 +9,8 @@ oja_ingest_dirs(
   snapshots = NULL,
   overwrite = FALSE,
   dim_dir = zip_dir,
-  path = oja_db_path()
+  path = oja_db_path(),
+  con = NULL
 )
 }
 \arguments{
@@ -23,7 +24,12 @@ oja_ingest_dirs(
 \item{dim_dir}{Directory che contiene i tre CSV \code{dim_table} globali.
 Default: \code{zip_dir}. Con \code{NULL} la ricarica viene saltata.}
 
-\item{path}{Percorso del file DuckDB. Default: \code{\link[=oja_db_path]{oja_db_path()}}.}
+\item{path}{Percorso del file DuckDB o del catalogo DuckLake. Default:
+\code{\link[=oja_db_path]{oja_db_path()}}. Ignorato se \code{con} non è \code{NULL}.}
+
+\item{con}{Connessione in scrittura, opzionale, per esempio aperta con
+\code{\link[=oja_connect]{oja_connect()}} su un catalogo DuckLake. Quando fornita la funzione non
+apre né chiude connessioni: al termine la connessione resta aperta.}
 }
 \value{
 Invisibilmente una \code{data.frame} con un riepilogo per ogni snapshot
@@ -37,6 +43,27 @@ vengono saltati a meno di \code{overwrite = TRUE}.
 }
 \details{
 Le dimensioni globali del fornitore vengono ricaricate una sola volta prima
-del ciclo: sono identiche per tutti gli snapshot, quindi ripeterne la
-lettura per ogni mese sarebbe lavoro inutile.
+del ciclo, in una transazione propria: sono identiche per tutti gli
+snapshot, quindi ripeterne la lettura per ogni mese sarebbe lavoro
+inutile.
+
+Senza transazione esterna ogni snapshot è ingerito nella propria
+transazione: un errore su uno snapshot viene segnalato, le sue scritture
+vengono annullate e il ciclo prosegue con gli snapshot successivi.
+
+Se \code{con} ha già una transazione aperta, tutte le scritture vi
+partecipano. In questo caso il primo errore interrompe il ciclo e viene
+propagato, perché le scritture parziali di uno snapshot non possono
+essere annullate singolarmente: il ROLLBACK spetta al chiamante.
+}
+\examples{
+\dontrun{
+  # Database predefinito (oja_db_path())
+  oja_ingest_dirs("~/Documents/funzioni/shared_data/oja/incoming")
+
+  # Connessione esterna allo schema oja di un lago DuckLake
+  con <- oja_connect("ducklake:sqlite:/percorso/lake.sqlite", read_only = FALSE)
+  oja_ingest_dirs("~/Documents/funzioni/shared_data/oja/incoming", con = con)
+  oja_disconnect(con)
+}
 }

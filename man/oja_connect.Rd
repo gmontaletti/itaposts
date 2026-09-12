@@ -2,12 +2,14 @@
 % Please edit documentation in R/connection.R
 \name{oja_connect}
 \alias{oja_connect}
-\title{Apre una connessione al database DuckDB OJA}
+\title{Apre una connessione al database OJA}
 \usage{
 oja_connect(path = oja_db_path(), read_only = TRUE, ...)
 }
 \arguments{
-\item{path}{Percorso del file DuckDB. Default: \code{\link[=oja_db_path]{oja_db_path()}}.}
+\item{path}{Percorso del file DuckDB oppure catalogo DuckLake con prefisso
+\verb{ducklake:} (es. \code{"ducklake:sqlite:/percorso/lake.sqlite"}). Default:
+\code{\link[=oja_db_path]{oja_db_path()}}.}
 
 \item{read_only}{Logico. \code{TRUE} (default) per consumatori; \code{FALSE} per
 ingestione.}
@@ -23,17 +25,44 @@ apre in sola lettura (i consumatori a valle). Le funzioni di ingestione
 richiedono \code{read_only = FALSE}.
 }
 \details{
-Il chiamante e' responsabile della chiusura via \code{\link[=oja_disconnect]{oja_disconnect()}} o
-\code{DBI::dbDisconnect(con, shutdown = TRUE)}. Il pattern raccomandato:
+Con un percorso di file la funzione apre il database DuckDB indicato.
+
+Con un percorso che inizia con \verb{ducklake:} la funzione apre un database
+DuckDB in memoria, carica l'estensione \code{ducklake} (più \code{sqlite} per i
+cataloghi \verb{ducklake:sqlite:}), collega il catalogo con
+\verb{ATTACH '<path>' AS lake} (\code{READ_ONLY} se \code{read_only = TRUE}) ed esegue
+\verb{USE lake.<schema>}, con lo schema indicato dall'opzione
+\code{itaposts.schema} (default \code{"oja"}). Le query con nomi di tabella non
+qualificati (\verb{FROM fact_postings}) risolvono quindi sullo schema del
+lago: le funzioni di lettura e di ingestione del pacchetto, e il codice
+dei consumatori a valle, restano invariati. Il database in memoria resta
+scrivibile anche in sola lettura, così viste e tabelle temporanee (es.
+\code{duckdb::duckdb_register()}) restano disponibili.
+
+Il catalogo DuckLake e lo schema devono esistere. La creazione del
+catalogo richiede l'opzione \code{DATA_PATH} ed è compito di chi inizializza
+il lago; nei collegamenti successivi il percorso dei dati è letto dal
+catalogo. Le estensioni si installano una volta con
+\verb{INSTALL ducklake; INSTALL sqlite;} (richiede la rete).
+
+Il chiamante è responsabile della chiusura via \code{\link[=oja_disconnect]{oja_disconnect()}}. Il
+pattern raccomandato:
 
 \if{html}{\out{<div class="sourceCode r">}}\preformatted{con <- oja_connect()
 on.exit(oja_disconnect(con), add = TRUE)
 }\if{html}{\out{</div>}}
 }
 \examples{
+con <- oja_connect(path = ":memory:", read_only = FALSE)
+DBI::dbGetQuery(con, "SELECT current_database() AS db")
+oja_disconnect(con)
+
 \dontrun{
   con <- oja_connect()
   on.exit(oja_disconnect(con), add = TRUE)
   DBI::dbListTables(con)
+
+  # Catalogo DuckLake: le query non qualificate usano lo schema lake.oja
+  con <- oja_connect("ducklake:sqlite:~/Documents/funzioni/datalake/catalog/lake.sqlite")
 }
 }

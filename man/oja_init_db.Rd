@@ -7,8 +7,8 @@
 oja_init_db(path = oja_db_path(), con = NULL)
 }
 \arguments{
-\item{path}{Percorso del file DuckDB. Default: \code{\link[=oja_db_path]{oja_db_path()}}. Ignorato se
-\code{con} non e' \code{NULL}.}
+\item{path}{Percorso del file DuckDB o del catalogo DuckLake (prefisso
+\verb{ducklake:}). Default: \code{\link[=oja_db_path]{oja_db_path()}}. Ignorato se \code{con} non è \code{NULL}.}
 
 \item{con}{Connessione DuckDB in scrittura, opzionale. Quando fornita la
 funzione si limita a eseguire il DDL.}
@@ -30,9 +30,18 @@ del fornitore (\code{dim_cp2021}, \code{dim_esco_occupation}, \code{dim_esco_ski
 ricaricate integralmente dai file \code{dim_table} a ogni ingest.
 
 Apre una connessione in scrittura sul percorso \code{path} e la chiude prima di
-restituire. Se il chiamante ha gia' una connessione in scrittura aperta puo'
-passarla via \code{con}; in tal caso non viene aperta ne' chiusa alcuna
+restituire. Se il chiamante ha già una connessione in scrittura aperta può
+passarla via \code{con}; in tal caso non viene aperta né chiusa alcuna
 connessione aggiuntiva.
+
+Su un database DuckDB le tabelle hanno PRIMARY KEY sulle chiavi logiche.
+Quando il database corrente della connessione è un catalogo DuckLake
+(rilevato con \code{duckdb_databases()}), le tabelle vengono create senza
+PRIMARY KEY, perché DuckLake non supporta vincoli di chiave: l'unicità
+delle chiavi è verificata dall'ingestione prima del COMMIT. Le tabelle
+sono create nello schema corrente, cioè \code{lake.oja} per le connessioni
+aperte con \code{\link[=oja_connect]{oja_connect()}} su un percorso \verb{ducklake:}; lo schema deve
+esistere.
 }
 \examples{
 \dontrun{

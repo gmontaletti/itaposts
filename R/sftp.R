@@ -811,6 +811,23 @@ oja_sftp_download <- function(
   invisible(dim_local)
 }
 
+# Snapshot già presenti in dim_snapshot. Con `con = NULL` apre in sola
+# lettura il database di `path`; un file DuckDB inesistente o un database
+# senza schema OJA non hanno snapshot.
+.oja_ingested_snapshots <- function(con = NULL, path = oja_db_path()) {
+  if (is.null(con)) {
+    if (!.is_ducklake_path(path) && !file.exists(path)) {
+      return(character())
+    }
+    con <- oja_connect(path = path)
+    on.exit(oja_disconnect(con), add = TRUE)
+  }
+  if (!.oja_table_exists(con, "dim_snapshot")) {
+    return(character())
+  }
+  oja_snapshots(con)$snapshot_id
+}
+
 # 7. Sincronizzazione end-to-end --------------------------------------------
 
 #' Sincronizza gli snapshot OJA dal server SFTP e li ingerisce
@@ -835,8 +852,13 @@ oja_sftp_download <- function(
 #' @param ingest Logico. Se `FALSE` esegue solo il download.
 #' @param overwrite Logico. Inoltrato a [oja_ingest_snapshot()].
 #' @param config Output di [oja_sftp_config()].
-#' @param path Percorso del file DuckDB. Default [oja_db_path()].
+#' @param path Percorso del file DuckDB o del catalogo DuckLake. Default
+#'   [oja_db_path()]. Ignorato se `con` non è `NULL`.
 #' @param lister,downloader Funzioni iniettabili (per i test).
+#' @param con Connessione in scrittura, opzionale, inoltrata a
+#'   [oja_ingest_dirs()]: permette di scrivere in un database già aperto dal
+#'   chiamante, per esempio lo schema `oja` di un lago DuckLake. È usata
+#'   anche per leggere gli snapshot già presenti e non viene chiusa.
 #'
 #' @return Invisibilmente un `data.frame` con `snapshot_id`, `downloaded`,
 #'   `ingested`, `n_postings`, `n_skills`.
@@ -845,6 +867,11 @@ oja_sftp_download <- function(
 #' \dontrun{
 #'   readRenviron("~/.Renviron")
 #'   oja_sync()
+#'
+#'   # Scrittura nello schema oja di un lago DuckLake
+#'   con <- oja_connect("ducklake:sqlite:/percorso/lake.sqlite", read_only = FALSE)
+#'   oja_sync(con = con)
+#'   oja_disconnect(con)
 #' }
 oja_sync <- function(
   region_code = "ITC4",
@@ -854,7 +881,8 @@ oja_sync <- function(
   config = oja_sftp_config(),
   path = oja_db_path(),
   lister = oja_remote_list,
-  downloader = oja_sftp_download
+  downloader = oja_sftp_download,
+  con = NULL
 ) {
   if (!dir.exists(config$local_dir)) {
     dir.create(config$local_dir, recursive = TRUE, showWarnings = FALSE)
@@ -909,12 +937,11 @@ oja_sync <- function(
     )))
   }
 
-  # Snapshot gia' nel DB
-  already <- character()
-  if (file.exists(path)) {
-    con <- oja_connect(path = path)
-    already <- oja_snapshots(con)$snapshot_id
-    oja_disconnect(con)
+  # Snapshot già nel DB: servono solo per decidere se ingerire.
+  already <- if (ingest) {
+    .oja_ingested_snapshots(con = con, path = path)
+  } else {
+    character()
   }
 
   rows <- vector("list", length(by_snap))
@@ -969,15 +996,22 @@ oja_sync <- function(
   }
 
   if (ingest && length(to_ingest)) {
-    cli::cli_inform(
-      "Ingest di {length(to_ingest)} snapshot in {.path {path}}..."
-    )
+    if (is.null(con)) {
+      cli::cli_inform(
+        "Ingest di {length(to_ingest)} snapshot in {.path {path}}..."
+      )
+    } else {
+      cli::cli_inform(
+        "Ingest di {length(to_ingest)} snapshot nella connessione fornita..."
+      )
+    }
     summary <- oja_ingest_dirs(
       zip_dir = config$local_dir,
       snapshots = to_ingest,
       overwrite = overwrite,
       dim_dir = dim_local,
-      path = path
+      path = path,
+      con = con
     )
     # Fix 2: guardia esplicita su "snapshot_id" %in% names(summary) come
     # belt-and-suspenders contro future regressioni nella forma di ritorno di
