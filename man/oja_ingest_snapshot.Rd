@@ -57,7 +57,11 @@ postings portano soltanto le chiavi esterne \code{cp2021_id_level_5} e
 \code{idesco_level_5}, la tabella delle skill soltanto \code{idescoskill_level_3}.
 Vengono quindi ricaricate integralmente dai tre CSV globali presenti in
 \code{dim_dir} (\code{dim_occ_cp2021.csv}, \code{dim_occ_esco.csv},
-\code{dim_esco_skills.csv}, delimitatore \verb{;}).
+\code{dim_esco_skills.csv}, delimitatore \verb{;}). La ricarica (\code{DELETE} e
+\code{INSERT}) avviene solo se il contenuto dei CSV differisce da quello della
+tabella, verificato con \verb{EXCEPT ALL} nei due sensi: con dimensioni
+invariate le tabelle non vengono modificate e su un catalogo DuckLake non
+si registrano modifiche.
 
 Il valore \code{"Unclassifiable"} puo' comparire in \code{idesco_level_5} come
 sentinella: non corrisponde a nessuna chiave di \code{dim_esco_occupation} e i

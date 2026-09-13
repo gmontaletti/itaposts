@@ -193,9 +193,18 @@
 
 # Ricarica integrale di una dimensione: DELETE + INSERT dalla staging temp.
 # Usata per le dimensioni globali del fornitore, che sono autoritative: una
-# ricarica evita che restino righe obsolete di consegne precedenti.
+# ricarica evita che restino righe obsolete di consegne precedenti. La
+# ricarica si esegue solo se il contenuto cambia: EXCEPT ALL nei due sensi
+# tra staging e tabella, sulle colonne di `dim_data`, conta anche le righe
+# ripetute e tratta i NULL come uguali. A contenuto invariato nessuna
+# istruzione modifica la tabella, per cui su DuckLake non viene registrata
+# alcuna modifica.
+# Restituisce invisibilmente TRUE se la tabella è stata ricaricata, FALSE se
+# il contenuto era invariato.
 .reload_dim <- function(con, dim_table, dim_data) {
   staging <- paste0("__stg_", dim_table)
+  tbl_q <- DBI::dbQuoteIdentifier(con, dim_table)
+  stg_q <- DBI::dbQuoteIdentifier(con, staging)
   duckdb::dbWriteTable(
     con,
     staging,
@@ -203,29 +212,47 @@
     temporary = TRUE,
     overwrite = TRUE
   )
+  on.exit(
+    try(
+      DBI::dbExecute(con, sprintf("DROP TABLE IF EXISTS %s;", stg_q)),
+      silent = TRUE
+    ),
+    add = TRUE
+  )
   cols_csv <- paste(
     DBI::dbQuoteIdentifier(con, names(dim_data)),
     collapse = ", "
   )
-  DBI::dbExecute(
+  diff <- DBI::dbGetQuery(
     con,
-    sprintf("DELETE FROM %s;", DBI::dbQuoteIdentifier(con, dim_table))
+    sprintf(
+      "SELECT
+         (SELECT COUNT(*) FROM (
+            SELECT %1$s FROM %2$s EXCEPT ALL SELECT %1$s FROM %3$s
+          )) AS n_nuove,
+         (SELECT COUNT(*) FROM (
+            SELECT %1$s FROM %3$s EXCEPT ALL SELECT %1$s FROM %2$s
+          )) AS n_obsolete",
+      cols_csv,
+      stg_q,
+      tbl_q
+    )
   )
-  n <- DBI::dbExecute(
+  if (diff$n_nuove == 0 && diff$n_obsolete == 0) {
+    return(invisible(FALSE))
+  }
+  DBI::dbExecute(con, sprintf("DELETE FROM %s;", tbl_q))
+  DBI::dbExecute(
     con,
     sprintf(
       "INSERT INTO %s (%s) SELECT %s FROM %s;",
-      DBI::dbQuoteIdentifier(con, dim_table),
+      tbl_q,
       cols_csv,
       cols_csv,
-      DBI::dbQuoteIdentifier(con, staging)
+      stg_q
     )
   )
-  DBI::dbExecute(
-    con,
-    sprintf("DROP TABLE %s;", DBI::dbQuoteIdentifier(con, staging))
-  )
-  invisible(n)
+  invisible(TRUE)
 }
 
 # Legge un CSV dim_table del fornitore (delimitatore ';'), rinomina le colonne
@@ -330,9 +357,15 @@
   for (tbl in names(specs)) {
     spec <- specs[[tbl]]
     dt <- .read_dim_csv(paths[[tbl]], spec$mapping, spec$pk)
-    .reload_dim(con, tbl, dt)
+    ricaricata <- .reload_dim(con, tbl, dt)
     n <- nrow(dt)
-    cli::cli_inform("Dimensione globale {.field {tbl}} ricaricata: {n} righe.")
+    if (ricaricata) {
+      cli::cli_inform(
+        "Dimensione globale {.field {tbl}} ricaricata: {n} righe."
+      )
+    } else {
+      cli::cli_inform("Dimensione globale {.field {tbl}} invariata: {n} righe.")
+    }
     counts[[tbl]] <- n
   }
   invisible(counts)
@@ -541,7 +574,11 @@
 #' `idesco_level_5`, la tabella delle skill soltanto `idescoskill_level_3`.
 #' Vengono quindi ricaricate integralmente dai tre CSV globali presenti in
 #' `dim_dir` (`dim_occ_cp2021.csv`, `dim_occ_esco.csv`,
-#' `dim_esco_skills.csv`, delimitatore `;`).
+#' `dim_esco_skills.csv`, delimitatore `;`). La ricarica (`DELETE` e
+#' `INSERT`) avviene solo se il contenuto dei CSV differisce da quello della
+#' tabella, verificato con `EXCEPT ALL` nei due sensi: con dimensioni
+#' invariate le tabelle non vengono modificate e su un catalogo DuckLake non
+#' si registrano modifiche.
 #'
 #' Il valore `"Unclassifiable"` puo' comparire in `idesco_level_5` come
 #' sentinella: non corrisponde a nessuna chiave di `dim_esco_occupation` e i

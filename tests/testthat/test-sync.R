@@ -234,3 +234,56 @@ for (backend in .oja_backends) {
     }
   )
 }
+
+test_that("i messaggi di oja_sync non riportano host e utente SFTP", {
+  cfg <- list(
+    host = "sftp.riservato.example",
+    port = 22L,
+    user = "utente_riservato",
+    password = "p",
+    remote_dir = "/data_v2/fact_table/ITC4",
+    dim_dir = "/data_v2/dim_table",
+    local_dir = tempfile("itaposts_sync_")
+  )
+  on.exit(unlink(cfg$local_dir, recursive = TRUE), add = TRUE)
+  listing <- make_remote_listing(c("ITC4_2026_5", "ITC4_2026_6"))
+  listing <- listing[
+    !(listing$snapshot_id == "ITC4_2026_6" &
+      listing$kind == "skills"),
+  ]
+  fake_lister <- function(config, region_code) listing
+  fake_dl <- function(remote_name, local_path, config) {
+    if (remote_name %in% .oja_dim_files) {
+      return(.write_dummy_dim(local_path))
+    }
+    writeBin(
+      raw(listing$size_bytes[match(remote_name, listing$name)]),
+      local_path
+    )
+    invisible(local_path)
+  }
+
+  testi <- character()
+  withCallingHandlers(
+    oja_sync(
+      config = cfg,
+      path = tempfile(fileext = ".duckdb"),
+      lister = fake_lister,
+      downloader = fake_dl,
+      ingest = FALSE
+    ),
+    message = function(m) {
+      testi <<- c(testi, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    },
+    warning = function(w) {
+      testi <<- c(testi, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+  testo <- paste(testi, collapse = "\n")
+  expect_match(testo, "Listing remoto", fixed = TRUE)
+  expect_match(testo, "incompleti", fixed = TRUE)
+  expect_no_match(testo, "sftp.riservato.example", fixed = TRUE)
+  expect_no_match(testo, "utente_riservato", fixed = TRUE)
+})

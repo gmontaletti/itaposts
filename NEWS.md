@@ -1,3 +1,18 @@
+# itaposts 0.4.1
+
+## Correzioni
+
+* Le dimensioni globali del fornitore (`dim_cp2021`, `dim_esco_occupation`,
+  `dim_esco_skill`) vengono riscritte solo se il contenuto dei CSV
+  `dim_table` differisce da quello delle tabelle: il confronto usa
+  `EXCEPT ALL` nei due sensi. Con dimensioni invariate
+  `oja_ingest_snapshot()` e `oja_ingest_dirs()` non eseguono `DELETE` e
+  `INSERT` su quelle tabelle, per cui un catalogo DuckLake non registra
+  modifiche; il messaggio indica la dimensione come invariata.
+* I messaggi di `oja_sync()` non riportano più l'host SFTP: il messaggio
+  "Listing remoto" indica solo la cartella remota. Negli errori del client
+  `sftp`, host, utente e password vengono mascherati nell'output riportato.
+
 # itaposts 0.4.0
 
 ## Backend DuckLake

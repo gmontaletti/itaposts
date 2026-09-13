@@ -230,6 +230,112 @@ for (backend in .oja_backends) {
 
   test_that(
     sprintf(
+      ".reload_dim salta DELETE e INSERT se il contenuto non cambia [%s]",
+      backend
+    ),
+    {
+      path <- local_temp_store(backend)
+      con <- oja_connect(path, read_only = FALSE)
+      on.exit(oja_disconnect(con), add = TRUE)
+      oja_init_db(con = con)
+
+      dim <- data.table::data.table(
+        cp2021_id_level_5 = c("2.5.1.1.0", "8.1.3.2.0", "3.1.1.2.0"),
+        cp2021_level_5 = c("Specialisti in contabilità", "Addetti", NA),
+        cp2021_level_1 = c("Professioni intellettuali", "", "Tecniche")
+      )
+      leggi <- function() {
+        DBI::dbGetQuery(
+          con,
+          "SELECT cp2021_id_level_5, cp2021_level_5, cp2021_level_1
+             FROM dim_cp2021 ORDER BY cp2021_id_level_5"
+        )
+      }
+      # Traccia fisica delle scritture: su DuckDB DELETE e INSERT assegnano
+      # nuovi rowid alle righe, su DuckLake ogni istruzione crea uno snapshot.
+      traccia <- function() {
+        if (identical(backend, "ducklake")) {
+          lake_snapshot_count(con)
+        } else {
+          DBI::dbGetQuery(con, "SELECT max(rowid) AS r FROM dim_cp2021")$r
+        }
+      }
+      staging_presente <- function() {
+        DBI::dbGetQuery(
+          con,
+          "SELECT COUNT(*) AS n FROM duckdb_tables()
+            WHERE table_name = '__stg_dim_cp2021'"
+        )$n >
+          0
+      }
+
+      expect_true(.reload_dim(con, "dim_cp2021", dim))
+      prima <- leggi()
+      traccia_prima <- traccia()
+
+      # Stesso contenuto in altro ordine, con NULL e stringa vuota: nessuna
+      # scrittura.
+      expect_false(.reload_dim(con, "dim_cp2021", dim[c(3L, 1L, 2L)]))
+      expect_identical(leggi(), prima)
+      expect_identical(traccia(), traccia_prima)
+      expect_false(staging_presente())
+
+      # Un valore diverso nei dati letti: ricarica.
+      modificata <- data.table::copy(dim)
+      modificata[2L, cp2021_level_5 := "Addetti alla pulizia"]
+      expect_true(.reload_dim(con, "dim_cp2021", modificata))
+      expect_gt(traccia(), traccia_prima)
+      dopo <- leggi()
+      expect_identical(
+        dopo$cp2021_level_5[dopo$cp2021_id_level_5 == "8.1.3.2.0"],
+        "Addetti alla pulizia"
+      )
+
+      # Una riga presente solo nella tabella: ricarica che la rimuove.
+      DBI::dbExecute(
+        con,
+        "INSERT INTO dim_cp2021 (cp2021_id_level_5) VALUES ('9.9.9.9.0')"
+      )
+      expect_true(.reload_dim(con, "dim_cp2021", modificata))
+      expect_identical(nrow(leggi()), 3L)
+      expect_false(staging_presente())
+    }
+  )
+
+  test_that(
+    sprintf(
+      "le dimensioni globali invariate non vengono riscritte [%s]",
+      backend
+    ),
+    {
+      fx <- build_fixtures()
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+      con <- oja_connect(path, read_only = FALSE)
+      on.exit(oja_disconnect(con), add = TRUE)
+      oja_init_db(con = con)
+
+      primo <- testthat::capture_messages(
+        .oja_with_transaction(con, .load_global_dims(con, fx$zip_dir))
+      )
+      expect_length(grep("ricaricata", primo), 3L)
+      n_snapshot <- if (identical(backend, "ducklake")) {
+        lake_snapshot_count(con)
+      }
+
+      secondo <- testthat::capture_messages(
+        .oja_with_transaction(con, .load_global_dims(con, fx$zip_dir))
+      )
+      expect_length(grep("invariata", secondo), 3L)
+      expect_length(grep("ricaricata", secondo), 0L)
+      if (identical(backend, "ducklake")) {
+        expect_identical(lake_snapshot_count(con), n_snapshot)
+      }
+    }
+  )
+
+  test_that(
+    sprintf(
       "lo streaming delle skill non duplica righe già presenti [%s]",
       backend
     ),

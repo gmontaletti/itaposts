@@ -227,3 +227,131 @@ test_that("oja_sftp_download rimuove `.part` preesistente prima del get", {
   )
   expect_equal(file.info(local_path)$size, 11L)
 })
+
+# 5. Host, utente e password assenti dai messaggi ---------------------------
+
+test_that(".sftp_redact maschera password, host e utente", {
+  txt <- "alice@sftp.example's password: p4ss\nConnection closed by sftp.example"
+  out <- itaposts:::.sftp_redact(
+    txt,
+    "p4ss",
+    host = "sftp.example",
+    user = "alice"
+  )
+  expect_no_match(out, "sftp.example", fixed = TRUE)
+  expect_no_match(out, "alice", fixed = TRUE)
+  expect_no_match(out, "p4ss", fixed = TRUE)
+  expect_match(out, "<utente>@<host>'s password: <password>", fixed = TRUE)
+  # Utente contenuto nell'host e nei segnaposto: nessun frammento residuo.
+  expect_identical(
+    itaposts:::.sftp_redact(
+      "host@sftp.host.example",
+      host = "sftp.host.example",
+      user = "host"
+    ),
+    "<utente>@<host>"
+  )
+  expect_identical(itaposts:::.sftp_redact("testo", NULL), "testo")
+  expect_identical(itaposts:::.sftp_redact("testo", NA, host = ""), "testo")
+})
+
+test_that("un errore del client in modalità batch non riporta host e utente", {
+  cfg <- base_cfg(
+    host = "sftp.riservato.example",
+    user = "utente_riservato",
+    private_key = "/etc/itaposts/id_ed25519"
+  )
+  testthat::local_mocked_bindings(
+    .sftp_invoke = function(spec, timeout = 1800) {
+      list(
+        stdout = "",
+        stderr = paste(
+          "utente_riservato@sftp.riservato.example: Permission denied (publickey).",
+          "Connection closed by sftp.riservato.example port 22",
+          sep = "\n"
+        ),
+        status = 255L
+      )
+    },
+    .package = "itaposts"
+  )
+  err <- expect_error(itaposts:::.sftp_run(cfg, "ls -l"))
+  msg <- conditionMessage(err)
+  expect_match(msg, "Permission denied", fixed = TRUE)
+  expect_no_match(msg, "sftp.riservato.example", fixed = TRUE)
+  expect_no_match(msg, "utente_riservato", fixed = TRUE)
+})
+
+test_that(".sftp_run inoltra host e utente alla sessione pty", {
+  cfg <- base_cfg(host = "sftp.riservato.example", user = "utente_riservato")
+  catturati <- NULL
+  testthat::local_mocked_bindings(
+    .sftp_invoke_pty = function(
+      spec,
+      batch_lines,
+      timeout = 1800,
+      host = NULL,
+      user = NULL
+    ) {
+      catturati <<- list(host = host, user = user, password = spec$password)
+      list(stdout = "ok", stderr = "", status = 0L)
+    },
+    .package = "itaposts"
+  )
+  res <- itaposts:::.sftp_run(cfg, "ls -l")
+  expect_identical(res$stdout, "ok")
+  expect_identical(
+    catturati,
+    list(
+      host = "sftp.riservato.example",
+      user = "utente_riservato",
+      password = "p"
+    )
+  )
+})
+
+test_that("gli errori della sessione pty non riportano host, utente e password", {
+  letture <- "utente_riservato@sftp.riservato.example's password: segreta"
+  proc <- list(
+    read_output = function() {
+      v <- if (length(letture)) letture[[1L]] else ""
+      letture <<- letture[-1L]
+      v
+    },
+    is_alive = function() FALSE,
+    get_exit_status = function() 255L,
+    kill_tree = function() invisible(NULL),
+    poll_io = function(ms) invisible(NULL)
+  )
+  err <- expect_error(
+    itaposts:::.sftp_pty_wait(
+      proc,
+      itaposts:::.sftp_rx_prompt,
+      5,
+      "il prompt dei comandi",
+      password = "segreta",
+      host = "sftp.riservato.example",
+      user = "utente_riservato"
+    )
+  )
+  msg <- conditionMessage(err)
+  expect_match(msg, "<utente>@<host>", fixed = TRUE)
+  expect_no_match(msg, "sftp.riservato.example", fixed = TRUE)
+  expect_no_match(msg, "utente_riservato", fixed = TRUE)
+  expect_no_match(msg, "segreta", fixed = TRUE)
+
+  err_cmd <- expect_error(
+    itaposts:::.sftp_pty_check(
+      "Connection closed by sftp.riservato.example",
+      "ls -l",
+      host = "sftp.riservato.example",
+      user = "utente_riservato"
+    )
+  )
+  expect_match(conditionMessage(err_cmd), "Connection closed", fixed = TRUE)
+  expect_no_match(
+    conditionMessage(err_cmd),
+    "sftp.riservato.example",
+    fixed = TRUE
+  )
+})

@@ -378,13 +378,25 @@ oja_sftp_config <- function(env = Sys.getenv) {
   }
 
   res <- if (identical(spec$mode %||% "batch", "pty")) {
-    .sftp_invoke_pty(spec, batch_lines, timeout = timeout)
+    .sftp_invoke_pty(
+      spec,
+      batch_lines,
+      timeout = timeout,
+      host = config$host,
+      user = config$user
+    )
   } else {
     .sftp_invoke(spec, timeout = timeout)
   }
 
   if (!isTRUE(res$status == 0L)) {
-    .sftp_abort_with_output(res, spec$cmd)
+    .sftp_abort_with_output(
+      res,
+      spec$cmd,
+      password = config$password,
+      host = config$host,
+      user = config$user
+    )
   }
   list(stdout = res$stdout %||% "", status = res$status)
 }
@@ -441,10 +453,18 @@ oja_sftp_config <- function(env = Sys.getenv) {
 }
 
 # Solleva un cli_abort con stdout+stderr troncati a ~50 righe per non
-# travolgere il chiamante con il rumore del client OpenSSH.
-.sftp_abort_with_output <- function(res, cmd) {
-  out <- .sftp_trunc_lines(res$stdout)
-  err <- .sftp_trunc_lines(res$stderr)
+# travolgere il chiamante con il rumore del client OpenSSH. Password, host e
+# utente vengono mascherati: OpenSSH li riporta negli errori di
+# autenticazione e di connessione.
+.sftp_abort_with_output <- function(
+  res,
+  cmd,
+  password = NULL,
+  host = NULL,
+  user = NULL
+) {
+  out <- .sftp_trunc_lines(.sftp_redact(res$stdout, password, host, user))
+  err <- .sftp_trunc_lines(.sftp_redact(res$stderr, password, host, user))
   body <- character()
   if (length(err)) {
     body <- c(body, "stderr:", err)
@@ -513,14 +533,36 @@ oja_sftp_config <- function(env = Sys.getenv) {
   sep = "|"
 )
 
-# Maschera la password in un testo destinato a un messaggio d'errore. Il pty
-# non riecheggia la password (il client disabilita l'echo), ma un log che la
-# contenesse sarebbe un incidente: la sostituzione e' incondizionata.
-.sftp_redact <- function(x, password) {
-  if (is.null(password) || !nzchar(password)) {
+# Maschera in un testo destinato a un messaggio d'errore la password, l'host
+# e l'utente SFTP. Il pty non riecheggia la password (il client disabilita
+# l'echo), ma un log che la contenesse sarebbe un incidente; host e utente
+# compaiono nel prompt della password di OpenSSH (`utente@host's password:`)
+# e negli errori del client. Le sostituzioni sono incondizionate: i valori
+# vengono sostituiti, dal piu' lungo, prima con marcatori di controllo e poi
+# con i segnaposto, cosi' un utente contenuto nell'host non lascia frammenti
+# e nessun valore altera i segnaposto gia' inseriti.
+.sftp_redact <- function(x, password = NULL, host = NULL, user = NULL) {
+  valori <- c(
+    password = password %||% "",
+    host = host %||% "",
+    user = user %||% ""
+  )
+  valori <- valori[!is.na(valori) & nzchar(valori)]
+  if (!length(valori) || !length(x)) {
     return(x)
   }
-  gsub(password, "<password>", x, fixed = TRUE)
+  marcatori <- stats::setNames(
+    intToUtf8(1:3, multiple = TRUE),
+    c("password", "host", "user")
+  )
+  segnaposto <- c(password = "<password>", host = "<host>", user = "<utente>")
+  for (k in names(valori)[order(nchar(valori), decreasing = TRUE)]) {
+    x <- gsub(valori[[k]], marcatori[[k]], x, fixed = TRUE)
+  }
+  for (k in names(valori)) {
+    x <- gsub(marcatori[[k]], segnaposto[[k]], x, fixed = TRUE)
+  }
+  x
 }
 
 # processx incanala stdout e stderr del processo sullo stesso pty; la lettura
@@ -532,8 +574,17 @@ oja_sftp_config <- function(env = Sys.getenv) {
 
 # Accumula l'output del pty finche' `pattern` non compare in coda al buffer.
 # Restituisce il buffer completo; aborta su timeout o su morte prematura del
-# client (auth fallita, host key rifiutata, connessione caduta).
-.sftp_pty_wait <- function(proc, pattern, timeout, what, password = NULL) {
+# client (auth fallita, host key rifiutata, connessione caduta). Il buffer
+# riportato nell'errore e' privo di password, host e utente.
+.sftp_pty_wait <- function(
+  proc,
+  pattern,
+  timeout,
+  what,
+  password = NULL,
+  host = NULL,
+  user = NULL
+) {
   buffer <- ""
   deadline <- Sys.time() + timeout
   repeat {
@@ -549,14 +600,14 @@ oja_sftp_config <- function(env = Sys.getenv) {
       }
       cli::cli_abort(c(
         "Sessione {.code sftp} terminata (exit {proc$get_exit_status()}) prima di {what}.",
-        .sftp_trunc_lines(.sftp_redact(buffer, password))
+        .sftp_trunc_lines(.sftp_redact(buffer, password, host, user))
       ))
     }
     if (Sys.time() >= deadline) {
       try(proc$kill_tree(), silent = TRUE)
       cli::cli_abort(c(
         "Timeout ({timeout}s) in attesa di {what}.",
-        .sftp_trunc_lines(.sftp_redact(buffer, password))
+        .sftp_trunc_lines(.sftp_redact(buffer, password, host, user))
       ))
     }
     proc$poll_io(500)
@@ -582,22 +633,36 @@ oja_sftp_config <- function(env = Sys.getenv) {
 }
 
 # Verifica l'esito di un singolo comando: in modalita' interattiva l'unico
-# segnale disponibile e' il testo emesso dal client.
-.sftp_pty_check <- function(chunk, command) {
+# segnale disponibile e' il testo emesso dal client. L'output riportato
+# nell'errore e' privo di password, host e utente.
+.sftp_pty_check <- function(
+  chunk,
+  command,
+  password = NULL,
+  host = NULL,
+  user = NULL
+) {
   if (!nzchar(chunk) || !grepl(.sftp_rx_error, chunk, perl = TRUE)) {
     return(invisible(NULL))
   }
   cli::cli_abort(c(
     "Comando {.code {command}} fallito nella sessione {.code sftp}.",
-    .sftp_trunc_lines(chunk)
+    .sftp_trunc_lines(.sftp_redact(chunk, password, host, user))
   ))
 }
 
 # Esegue `batch_lines` in una sessione `sftp` interattiva su pseudo-terminale:
 # risponde al prompt della password, poi invia un comando per volta attendendo
 # ogni volta il prompt successivo. Restituisce list(stdout, stderr, status)
-# con la stessa forma di .sftp_invoke().
-.sftp_invoke_pty <- function(spec, batch_lines, timeout = 1800) {
+# con la stessa forma di .sftp_invoke(). `host` e `user` servono solo a
+# mascherare i messaggi d'errore.
+.sftp_invoke_pty <- function(
+  spec,
+  batch_lines,
+  timeout = 1800,
+  host = NULL,
+  user = NULL
+) {
   if (.Platform$OS.type == "windows") {
     cli::cli_abort(c(
       "Auth SFTP a password non supportata su Windows.",
@@ -633,7 +698,9 @@ oja_sftp_config <- function(env = Sys.getenv) {
     sprintf("(%s)|(%s)", .sftp_rx_password, .sftp_rx_prompt),
     min(remaining(), 120),
     "il prompt della password o il prompt `sftp>`",
-    password
+    password,
+    host,
+    user
   )
   if (grepl(.sftp_rx_password, seen, perl = TRUE)) {
     proc$write_input(paste0(password, "\r"))
@@ -642,7 +709,9 @@ oja_sftp_config <- function(env = Sys.getenv) {
       .sftp_rx_prompt,
       min(remaining(), 120),
       "il prompt `sftp>` dopo l'autenticazione",
-      password
+      password,
+      host,
+      user
     )
   }
 
@@ -657,10 +726,12 @@ oja_sftp_config <- function(env = Sys.getenv) {
       .sftp_rx_prompt,
       remaining(),
       sprintf("l'output del comando `%s`", cmd),
-      password
+      password,
+      host,
+      user
     )
     chunk <- .sftp_pty_chunk(raw_chunk, cmd)
-    .sftp_pty_check(chunk, cmd)
+    .sftp_pty_check(chunk, cmd, password, host, user)
     out[[i]] <- chunk
   }
 
@@ -890,9 +961,13 @@ oja_sync <- function(
 
   dim_local <- .oja_download_dim_tables(config, downloader = downloader)
 
-  cli::cli_inform(
-    "Listing remoto su {.url sftp://{config$host}{config$remote_dir}/}..."
-  )
+  # L'host SFTP non compare nei messaggi: basta la cartella remota.
+  remote_dir <- config$remote_dir %||% ""
+  if (nzchar(remote_dir)) {
+    cli::cli_inform("Listing remoto della cartella {.path {remote_dir}}...")
+  } else {
+    cli::cli_inform("Listing remoto...")
+  }
   remote <- lister(config, region_code)
   if (!nrow(remote)) {
     cli::cli_warn(

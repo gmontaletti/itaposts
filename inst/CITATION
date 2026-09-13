@@ -10,6 +10,6 @@ bibentry(
     comment = c(ORCID = "0009-0002-5327-1122")
   ),
   year     = "2026",
-  note     = "Versione 0.4.0",
+  note     = "Versione 0.4.1",
   url      = "https://github.com/gmontaletti/itaposts"
 )
