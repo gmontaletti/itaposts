@@ -63,6 +63,18 @@ tabella, verificato con \verb{EXCEPT ALL} nei due sensi: con dimensioni
 invariate le tabelle non vengono modificate e su un catalogo DuckLake non
 si registrano modifiche.
 
+Le ragioni sociali (\code{companyname}) passano per un oscuramento prima di
+essere scritte: ogni forma di codice fiscale di persona fisica diventa
+\verb{[CF]}. E' la regola dei microdati COB (decisione D-COB-1 del piano del
+data lake), qui senza la soglia sulle occorrenze rare, che riguarda il
+testo libero. Sono oscurati sia il valore che e' tutto e solo un codice —
+il caso della ditta individuale registrata con il codice del titolare —
+sia un codice scritto accanto al nome. In quest'ultimo caso la forma
+richiede cifre vere nelle posizioni numeriche, perche' una forma che
+ammetta lettere ovunque cancellerebbe qualsiasi ragione sociale di sedici
+lettere. Un controllo bloccante dentro la stessa transazione annulla la
+scrittura se una forma sopravvive; nei messaggi compaiono solo conteggi.
+
 Il valore \code{"Unclassifiable"} puo' comparire in \code{idesco_level_5} come
 sentinella: non corrisponde a nessuna chiave di \code{dim_esco_occupation} e i
 join in lettura restituiscono \code{NA} per le descrizioni.

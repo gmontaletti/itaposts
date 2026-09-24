@@ -154,7 +154,8 @@ build_fixtures <- function(
   snapshot_id = "TEST_2026_1",
   n_postings = 50L,
   n_skills_per = 4L,
-  include_duplicates = TRUE
+  include_duplicates = TRUE,
+  companynames = NULL
 ) {
   if (!dir.exists(zip_dir)) {
     dir.create(zip_dir, recursive = TRUE)
@@ -215,13 +216,15 @@ build_fixtures <- function(
     postings <- data.table::rbindlist(list(postings, dups))
   }
 
+  # `companynames` permette di iniettare ragioni sociali scelte, in ordine e
+  # riciclate sugli id: serve ai test sull'oscuramento dei codici fiscali.
   postings_raw <- data.table::data.table(
     general_id = ids,
-    companyname = sample(
-      c("Acme Spa", "Beta Srl", "Randstad"),
-      n_postings,
-      replace = TRUE
-    )
+    companyname = if (is.null(companynames)) {
+      sample(c("Acme Spa", "Beta Srl", "Randstad"), n_postings, replace = TRUE)
+    } else {
+      rep_len(as.character(companynames), n_postings)
+    }
   )
 
   # La CSV delle skill in data_v2 porta soltanto la chiave della skill.
@@ -278,6 +281,7 @@ build_fixtures <- function(
     zip_dir = zip_dir,
     snapshot_id = snapshot_id,
     n_postings_unique = n_postings,
+    companynames = postings_raw$companyname,
     n_skills_total = nrow(skills),
     skill_codes = skill_codes,
     dim_files = dim_files,

@@ -1,3 +1,21 @@
+# itaposts 0.5.0
+
+## Riservatezza
+
+* `oja_ingest_snapshot()` oscura le forme di codice fiscale di persona fisica
+  nella colonna `companyname` prima di scriverla in `fact_postings`: la forma
+  diventa `[CF]`. È la regola dei microdati COB (decisione D-COB-1 del piano
+  del data lake), qui senza la soglia sulle occorrenze rare, che riguarda il
+  testo libero. Sono oscurati sia il valore che è tutto e solo un codice — il
+  caso della ditta individuale registrata con il codice del titolare — sia un
+  codice scritto accanto al nome; in quest'ultimo caso la forma richiede cifre
+  nelle posizioni numeriche, perché una forma che ammetta lettere ovunque
+  cancellerebbe qualsiasi ragione sociale di sedici lettere. I codici di
+  undici cifre delle persone giuridiche restano in chiaro.
+* La validazione che precede il `COMMIT` dell'ingestione fallisce se una forma
+  di codice fiscale sopravvive in `companyname`: la scrittura dello snapshot
+  viene annullata. Nei messaggi compaiono solo conteggi.
+
 # itaposts 0.4.1
 
 ## Correzioni

@@ -123,7 +123,50 @@
   dt[]
 }
 
+# Forme di codice fiscale di persona fisica, per l'oscuramento delle ragioni
+# sociali (decisione D-COB-1, sezione 11 del piano del data lake: la forma di
+# un codice fiscale diventa `[CF]`). La soglia sulle occorrenze rare prevista
+# dalla stessa decisione riguarda il testo libero dei microdati COB e non si
+# applica qui.
+#
+# Si usano due forme, perche' una ragione sociale non e' testo libero:
+# - `.RE_CF_INTERO`: il valore, dopo trim, e' tutto e solo un codice fiscale.
+#   Ammette le lettere dell'omocodia (LMNPQRSTUV) nelle posizioni numeriche,
+#   con la lettera del mese fra ABCDEHLMPRST, oppure cifre vere in quelle
+#   posizioni con una lettera qualsiasi per il mese. E' il caso della ditta
+#   individuale registrata con il codice del titolare.
+# - `.RE_CF_IMMERSO`: una sottostringa con cifre vere in tutte le posizioni
+#   numeriche, che intercetta il codice scritto accanto al nome. Le cifre sono
+#   obbligatorie di proposito: una forma che ammetta lettere ovunque fa
+#   passare per codice fiscale qualsiasi parola di sedici lettere, e in una
+#   colonna di ragioni sociali cancellerebbe nomi legittimi.
+.CF_NUM <- "[0-9LMNPQRSTUVlmnpqrstuv]"
+.RE_CF_IMMERSO <- "[A-Za-z]{6}[0-9]{2}[A-Za-z][0-9]{2}[A-Za-z][0-9]{3}[A-Za-z]"
+# Senza ancore: serve cosi' a regexp_full_match() di DuckDB nella validazione.
+.RE_CF_VALORE <- sprintf(
+  "(%s|%s)",
+  sprintf(
+    "[A-Za-z]{6}%1$s{2}[ABCDEHLMPRSTabcdehlmprst]%1$s{2}[A-Za-z]%1$s{3}[A-Za-z]",
+    .CF_NUM
+  ),
+  .RE_CF_IMMERSO
+)
+.RE_CF_INTERO <- paste0("^", .RE_CF_VALORE, "$")
+
+# Sostituisce con `[CF]` le forme di codice fiscale in un vettore di testo.
+# `NA` resta `NA`. Vettorizzata: nessun ciclo sulle righe.
+.mask_cf <- function(x) {
+  if (!is.character(x)) {
+    return(x)
+  }
+  intero <- !is.na(x) & grepl(.RE_CF_INTERO, trimws(x))
+  x[intero] <- "[CF]"
+  gsub(.RE_CF_IMMERSO, "[CF]", x)
+}
+
 # Carica e congiunge le ragioni sociali dalla tabella _postings_raw.
+# Le forme di codice fiscale vengono oscurate prima che la colonna raggiunga
+# `fact_postings`: il valore di origine non viene mai scritto.
 .attach_companyname <- function(dt_postings, raw_zip_path) {
   raw <- data.table::fread(raw_zip_path, showProgress = FALSE)
   if (!all(c("general_id", "companyname") %in% names(raw))) {
@@ -136,6 +179,7 @@
   }
   raw <- unique(raw, by = "general_id")
   dt_postings[raw, companyname := i.companyname, on = "general_id"]
+  dt_postings[, companyname := .mask_cf(as.character(companyname))]
   dt_postings
 }
 
@@ -548,7 +592,33 @@
       "i" = "Snapshot: {.val {snapshot_id}}."
     ))
   }
+  .validate_companyname(con, snapshot_id)
   invisible(keys)
+}
+
+# Controllo bloccante sulle ragioni sociali dello snapshot appena scritto:
+# nessun valore deve avere la forma di un codice fiscale di persona fisica.
+# Gira dentro la transazione di `oja_ingest_snapshot()`, quindi un residuo
+# annulla la scrittura. Il messaggio riporta solo conteggi, mai valori.
+.validate_companyname <- function(con, snapshot_id) {
+  res <- DBI::dbGetQuery(
+    con,
+    "SELECT COUNT(*) AS n_righe,
+            COUNT(DISTINCT companyname) AS n_valori
+       FROM fact_postings
+      WHERE snapshot_id = ?
+        AND (regexp_full_match(trim(companyname), ?)
+          OR regexp_matches(companyname, ?))",
+    params = list(snapshot_id, .RE_CF_VALORE, .RE_CF_IMMERSO)
+  )
+  if (res$n_righe > 0L) {
+    cli::cli_abort(c(
+      "Forme di codice fiscale in {.field companyname} dopo l'ingestione.",
+      "x" = "{res$n_righe} righe, {res$n_valori} valori distinti.",
+      "i" = "Snapshot: {.val {snapshot_id}}."
+    ))
+  }
+  invisible(res$n_righe)
 }
 
 # 2. Ingestione di un singolo snapshot ---------------------------------------
@@ -579,6 +649,18 @@
 #' tabella, verificato con `EXCEPT ALL` nei due sensi: con dimensioni
 #' invariate le tabelle non vengono modificate e su un catalogo DuckLake non
 #' si registrano modifiche.
+#'
+#' Le ragioni sociali (`companyname`) passano per un oscuramento prima di
+#' essere scritte: ogni forma di codice fiscale di persona fisica diventa
+#' `[CF]`. E' la regola dei microdati COB (decisione D-COB-1 del piano del
+#' data lake), qui senza la soglia sulle occorrenze rare, che riguarda il
+#' testo libero. Sono oscurati sia il valore che e' tutto e solo un codice —
+#' il caso della ditta individuale registrata con il codice del titolare —
+#' sia un codice scritto accanto al nome. In quest'ultimo caso la forma
+#' richiede cifre vere nelle posizioni numeriche, perche' una forma che
+#' ammetta lettere ovunque cancellerebbe qualsiasi ragione sociale di sedici
+#' lettere. Un controllo bloccante dentro la stessa transazione annulla la
+#' scrittura se una forma sopravvive; nei messaggi compaiono solo conteggi.
 #'
 #' Il valore `"Unclassifiable"` puo' comparire in `idesco_level_5` come
 #' sentinella: non corrisponde a nessuna chiave di `dim_esco_occupation` e i

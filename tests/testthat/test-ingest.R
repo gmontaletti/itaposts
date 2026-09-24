@@ -562,3 +562,132 @@ test_that("snapshot_id parsing rifiuta formati invalidi", {
     regexp = "snapshot_id"
   )
 })
+
+# 6. Oscuramento dei codici fiscali nelle ragioni sociali ---------------------
+
+# Fixture di forme di codice fiscale. I codici sono sintetici e non
+# appartengono a nessuna persona: servono solo a esercitare la forma.
+.cf_fixture <- c(
+  # 1. valore che e' tutto e solo un codice, maiuscolo
+  "RSSMRA80A01H501U",
+  # 2. stesso codice in minuscolo
+  "rssmra80a01h501u",
+  # 3. valore con le lettere dell'omocodia nelle posizioni numeriche
+  "RSSMRA8LA0MH50NU",
+  # 4. codice scritto accanto al nome
+  "Ditta RSSMRA80A01H501U",
+  # 5. codice con spazi attorno
+  "  RSSMRA80A01H501U  ",
+  # 6. ragione sociale legittima di sedici lettere: la forma larga della
+  #    decisione D-COB-1 la colpirebbe, la regola adottata qui no
+  "TRASPORTIMPERSUD",
+  # 7. ragione sociale ordinaria
+  "Acme Spa"
+)
+
+test_that(".mask_cf sostituisce le forme di codice fiscale e conserva il resto", {
+  atteso <- c(
+    "[CF]",
+    "[CF]",
+    "[CF]",
+    "Ditta [CF]",
+    "[CF]",
+    "TRASPORTIMPERSUD",
+    "Acme Spa"
+  )
+  expect_identical(.mask_cf(.cf_fixture), atteso)
+
+  # NA resta NA, il vettore vuoto resta vuoto, i non caratteri passano.
+  expect_identical(
+    .mask_cf(c(NA_character_, "Beta Srl")),
+    c(NA_character_, "Beta Srl")
+  )
+  expect_identical(.mask_cf(character()), character())
+  expect_identical(.mask_cf(1:3), 1:3)
+
+  # Codice di 11 cifre della persona giuridica: resta in chiaro per decisione
+  # della sezione 10 del piano.
+  expect_identical(.mask_cf("12345678901"), "12345678901")
+})
+
+for (backend in .oja_backends) {
+  test_that(
+    sprintf(
+      "oja_ingest_snapshot non scrive forme di codice fiscale in companyname [%s]",
+      backend
+    ),
+    {
+      fx <- build_fixtures(
+        n_postings = length(.cf_fixture),
+        n_skills_per = 2L,
+        include_duplicates = FALSE,
+        companynames = .cf_fixture
+      )
+      on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+      path <- local_temp_store(backend)
+
+      res <- oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = path)
+      expect_equal(res$n_postings, length(.cf_fixture))
+
+      con <- oja_connect(path)
+      on.exit(oja_disconnect(con), add = TRUE)
+
+      # Nessun residuo: e' lo stesso controllo del lago.
+      q <- DBI::dbGetQuery(
+        con,
+        "SELECT COUNT(*) AS n_righe, COUNT(*) AS n_tot
+           FROM fact_postings
+          WHERE snapshot_id = ?
+            AND (regexp_full_match(trim(companyname), ?)
+              OR regexp_matches(companyname, ?))",
+        params = list(fx$snapshot_id, .RE_CF_VALORE, .RE_CF_IMMERSO)
+      )
+      expect_equal(q$n_righe, 0L)
+
+      # Il conteggio delle righe non cambia e i valori non interessati
+      # restano identici.
+      valori <- DBI::dbGetQuery(
+        con,
+        "SELECT companyname, COUNT(*) AS n
+           FROM fact_postings WHERE snapshot_id = ?
+          GROUP BY companyname ORDER BY companyname",
+        params = list(fx$snapshot_id)
+      )
+      expect_equal(sum(valori$n), length(.cf_fixture))
+      expect_identical(
+        sort(valori$companyname),
+        sort(unique(c("[CF]", "Ditta [CF]", "TRASPORTIMPERSUD", "Acme Spa")))
+      )
+    }
+  )
+}
+
+test_that("la validazione blocca una forma di codice fiscale in companyname", {
+  fx <- build_fixtures(n_postings = 10L, n_skills_per = 2L)
+  on.exit(unlink(fx$zip_dir, recursive = TRUE), add = TRUE)
+  lake <- local_temp_lake()
+  oja_ingest_snapshot(fx$zip_dir, fx$snapshot_id, path = lake)
+
+  con <- oja_connect(lake, read_only = FALSE)
+  on.exit(oja_disconnect(con), add = TRUE)
+  expect_no_error(.validate_companyname(con, fx$snapshot_id))
+
+  # Scrittura diretta, che scavalca l'oscuramento dell'ingestione.
+  id_uno <- DBI::dbGetQuery(
+    con,
+    "SELECT min(general_id) AS id FROM fact_postings WHERE snapshot_id = ?",
+    params = list(fx$snapshot_id)
+  )$id
+  DBI::dbExecute(
+    con,
+    "UPDATE fact_postings SET companyname = ?
+      WHERE snapshot_id = ? AND general_id = ?",
+    params = list("RSSMRA80A01H501U", fx$snapshot_id, id_uno)
+  )
+  # Il messaggio riporta conteggi, non valori.
+  expect_error(
+    .validate_companyname(con, fx$snapshot_id),
+    "codice fiscale"
+  )
+  expect_error(.validate_snapshot(con, fx$snapshot_id), "codice fiscale")
+})
