@@ -325,6 +325,7 @@
     dim_cp2021 = list(
       file = "dim_occ_cp2021.csv",
       pk = "cp2021_id_level_5",
+      reader = .read_dim_cp2021,
       mapping = c(
         cod_5 = "cp2021_id_level_5",
         descr_5 = "cp2021_level_5",
@@ -400,7 +401,8 @@
   names(counts) <- names(specs)
   for (tbl in names(specs)) {
     spec <- specs[[tbl]]
-    dt <- .read_dim_csv(paths[[tbl]], spec$mapping, spec$pk)
+    reader <- if (is.null(spec$reader)) .read_dim_csv else spec$reader
+    dt <- reader(paths[[tbl]], spec$mapping, spec$pk)
     ricaricata <- .reload_dim(con, tbl, dt)
     n <- nrow(dt)
     if (ricaricata) {
@@ -869,6 +871,44 @@ oja_ingest_snapshot <- function(
 }
 
 # 3. Ingestione di una directory intera --------------------------------------
+
+#' Ricarica le dimensioni globali del fornitore
+#'
+#' Ricarica `dim_cp2021`, `dim_esco_occupation` e `dim_esco_skill` dai CSV
+#' `dim_table` senza ingerire alcuno snapshot. Serve a rileggere le dimensioni
+#' dopo una correzione del lettore o una nuova consegna del fornitore. Ogni
+#' tabella viene riscritta solo se il contenuto cambia; l'operazione avviene in
+#' una transazione.
+#'
+#' @details
+#' `dim_cp2021` è letta con un lettore che tollera i difetti noti del file del
+#' fornitore: decodifica le entità HTML delle etichette, ricostruisce i
+#' record vuoti dal testo grezzo e mette in quarantena i frammenti di record
+#' malformati, con un avviso. Il file fallisce se la quota in quarantena
+#' supera il 5%.
+#'
+#' @param dim_dir Directory che contiene i tre CSV `dim_table`.
+#' @param path Percorso del file DuckDB o del catalogo DuckLake. Default:
+#'   [oja_db_path()]. Ignorato se `con` non è `NULL`.
+#' @param con Connessione in scrittura, opzionale. Quando fornita la funzione
+#'   non la chiude.
+#'
+#' @return Invisibilmente un vettore intero con il numero di righe di ogni
+#'   dimensione.
+#' @export
+#' @examples
+#' \dontrun{
+#'   oja_reload_dims("~/Documents/funzioni/shared_data/oja/incoming/dim_table")
+#' }
+oja_reload_dims <- function(dim_dir, path = oja_db_path(), con = NULL) {
+  if (is.null(con)) {
+    con <- oja_connect(path = path, read_only = FALSE)
+    on.exit(oja_disconnect(con), add = TRUE)
+  }
+  oja_init_db(con = con)
+  .oja_with_transaction(con, .load_global_dims(con, dim_dir))
+}
+
 
 #' Ingerisce tutti gli snapshot OJA presenti in una directory
 #'

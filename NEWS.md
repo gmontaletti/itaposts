@@ -1,3 +1,25 @@
+# itaposts 0.5.1
+
+## Correzioni
+
+* La dimensione `dim_cp2021` non contiene più i frammenti di testo nelle
+  colonne dei codici. Il file `dim_occ_cp2021.csv` del fornitore è
+  malformato: cinque record CP5 (1.2.1.4.1, 1.2.1.4.2, 1.2.2.2.1, 1.2.2.2.2,
+  2.3.1.4.0) sono svuotati nella posizione corretta e riversati in coda al
+  file senza virgolette coerenti. Il lettore li ricostruisce dal testo
+  grezzo, se le etichette sono coerenti con quelle già note per gli stessi
+  codici, e mette in quarantena i frammenti, con un avviso che ne riporta
+  il numero di riga. La lettura fallisce se oltre il 5% delle righe finisce
+  in quarantena. Il lettore restituisce la quarantena e i codici ricostruiti
+  come attributi.
+* Le entità HTML nelle etichette della dimensione CP2021 (`&agrave;`) sono
+  decodificate in caratteri UTF-8.
+
+## Nuove funzioni
+
+* `oja_reload_dims()` ricarica le dimensioni globali del fornitore senza
+  ingerire alcuno snapshot.
+
 # itaposts 0.5.0
 
 ## Riservatezza

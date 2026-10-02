@@ -134,7 +134,7 @@ citation("itaposts")
 Riferimento bibliografico:
 
 > Montaletti, G. (2026). *itaposts: Importazione e Normalizzazione di OJA
-> Italiani in DuckDB*. Versione 0.5.0.
+> Italiani in DuckDB*. Versione 0.5.1.
 > <https://github.com/gmontaletti/itaposts>
 
 ## Licenza
